@@ -1,6 +1,6 @@
 import type { Context } from "hono"
 import { setCookie } from "hono/cookie"
-import db from "../../util/db"
+import { clearUserTokens, getUser } from "../../util"
 import { ANTISPACE_URL } from "../../config/simple"
 
 /**
@@ -19,22 +19,15 @@ export default async function handler(c: Context) {
     console.log(`Processing logout for user ${userId}`)
 
     // Get user from database
-    const user = await db.getUser(userId)
+    const user = await getUser(userId)
     
     if (!user || !user.accessToken) {
       console.log(`User ${userId} not found or not authenticated`)
       return c.redirect(`${ANTISPACE_URL}/me?info=not_authenticated`)
     }
 
-    // Clear the user's tokens by updating them to undefined
-    await db.updateUser(userId, {
-      accessToken: undefined,
-      refreshToken: undefined,
-      teamId: undefined,
-      teamName: undefined,
-      userId: undefined,
-      userName: undefined,
-    })
+    // Clear the user's tokens
+    await clearUserTokens(userId)
 
     console.log(`Successfully logged out user ${userId} from Slack`)
 

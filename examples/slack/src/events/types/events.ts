@@ -50,6 +50,7 @@ export interface SlackMessageEvent extends SlackEvent {
   ts: string
   thread_ts?: string
   subtype?: string
+  bot_id?: string
   edited?: {
     user: string
     ts: string

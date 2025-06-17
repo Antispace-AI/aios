@@ -1,8 +1,14 @@
-// Main entry point for Slack app storage layer
-// Clean separation of interfaces and types
+// Main storage module exports
+// This file provides the public interface for all storage operations
 
 // Storage interfaces (no implementation code)
 export * from './interfaces'
 
 // Database types and schemas
-export * from './schema/types' 
+export * from './schema/types'
+
+// PostgreSQL implementation
+export { PostgreSQLConnection } from './implementations/postgres/connection'
+export { PostgreSQLSlackDataStore } from './implementations/postgres/postgres-data-store'
+export { createStorageContainer } from './implementations/postgres/container'
+export type { StorageContainer } from './implementations/postgres/container' 

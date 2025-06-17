@@ -1,13 +1,20 @@
-import db, { type UserData } from "./db"
+// Import PostgreSQL storage directly instead of using adapter
+import { createStorageContainer } from '../storage'
+import { SlackDataStore } from '../storage/interfaces/slack-data-store'
+import type { User } from '../storage/schema/types/database'
 
-export type User = UserData
+// Re-export User type for backward compatibility
+export type { User }
+
+// Create storage instance
+const { dataStore } = createStorageContainer()
 
 /**
  * Get or create a user by their Antispace user ID
  */
-export const getUser = async (userID: string): Promise<User> => {
+export const getUser = async (userID: string): Promise<any> => {
   // First, try to get existing user
-  const existingUser = await db.getUser(userID)
+  const existingUser = await dataStore.getUser(userID)
 
   if (existingUser) {
     return existingUser
@@ -15,7 +22,7 @@ export const getUser = async (userID: string): Promise<User> => {
 
   // User doesn't exist, create a new one
   console.log(`Creating new user record for ${userID}`)
-  return await db.createUser(userID)
+  return await dataStore.createUser({ antiId: userID })
 }
 
 /**
@@ -23,7 +30,7 @@ export const getUser = async (userID: string): Promise<User> => {
  */
 export const isUserAuthenticated = async (userID: string): Promise<boolean> => {
   try {
-    const user = await db.getUser(userID)
+    const user = await dataStore.getUser(userID)
     return !!(user && user.accessToken && user.accessToken.trim().length > 0)
   } catch (error) {
     console.error(`Error checking authentication for user ${userID}:`, error)
@@ -36,19 +43,19 @@ export const isUserAuthenticated = async (userID: string): Promise<boolean> => {
  */
 export const clearUserTokens = async (userID: string): Promise<boolean> => {
   try {
-    const user = await db.getUser(userID)
+    const user = await dataStore.getUser(userID)
     if (!user) {
       return false // User doesn't exist
     }
 
-    // Explicitly set auth-related fields to undefined to clear them
-    await db.updateUser(userID, {
+    // Clear auth-related fields
+    await dataStore.updateUser(userID, {
       accessToken: undefined,
       refreshToken: undefined,
       teamId: undefined,
       teamName: undefined,
-      userId: undefined,
-      userName: undefined,
+      slackUserId: undefined,
+      slackUserName: undefined,
     })
 
     console.log(`Successfully cleared tokens for user ${userID}`)
@@ -68,30 +75,30 @@ export const updateUserTokens = async (
   refreshToken?: string,
   teamId?: string,
   teamName?: string,
-  userId?: string,
-  userName?: string
-): Promise<User> => {
+  slackUserId?: string,
+  slackUserName?: string
+): Promise<any> => {
   try {
-    return await db.updateUser(userID, {
+    return await dataStore.updateUser(userID, {
       accessToken,
       refreshToken,
       teamId,
       teamName,
-      userId,
-      userName,
+      slackUserId,
+      slackUserName,
     })
   } catch (error) {
     // If user doesn't exist, create them first
     if (error instanceof Error && error.message.includes("not found")) {
       console.log(`User ${userID} not found, creating new user`)
-      await db.createUser(userID)
-      return await db.updateUser(userID, {
+      await dataStore.createUser({ antiId: userID })
+      return await dataStore.updateUser(userID, {
         accessToken,
         refreshToken,
         teamId,
         teamName,
-        userId,
-        userName,
+        slackUserId,
+        slackUserName,
       })
     }
     throw error

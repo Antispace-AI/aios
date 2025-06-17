@@ -48,8 +48,8 @@ export async function handleAuthenticationActions(
         message: "Successfully authenticated with Slack!",
         team_name: user.teamName || "Unknown",
         team_id: user.teamId || "Unknown", 
-        user_name: user.userName || "Unknown",
-        slack_user_id: user.userId || "Unknown",
+        user_name: user.slackUserName || "Unknown",
+        slack_user_id: user.slackUserId || "Unknown",
         token_preview: user.accessToken ? `${user.accessToken.substring(0, 12)}...` : "No token",
         next_steps: [
           "You can now use Slack functions like:",

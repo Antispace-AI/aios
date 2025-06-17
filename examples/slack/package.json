@@ -6,7 +6,9 @@
   "dependencies": {
     "@antispace/sdk": "latest",
     "@google/generative-ai": "^0.24.1",
-    "@slack/web-api": "^7.9.2"
+    "@slack/web-api": "^7.9.2",
+    "@types/pg": "^8.15.4",
+    "pg": "^8.16.0"
   },
   "devDependencies": {
     "@types/node": "20.11.17",
