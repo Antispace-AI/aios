@@ -1,4 +1,4 @@
-import { SlackDataStore } from '../../../cache/interfaces/slack-data-store'
+import { SlackDataStore } from '../../interfaces/slack-data-store'
 import { PostgreSQLConnection } from './connection'
 import { logger } from '../../../util/logger'
 import type {
@@ -17,16 +17,42 @@ import type {
   CreateConversationInput,
   UpdateConversationInput,
   CreateMessageInput,
+  QuickMessageInput,
   UpdateMessageInput,
   GetMessagesQuery,
   GetConversationsQuery,
   SearchMessagesQuery
-} from '../../../cache/schema/types/database'
+} from '../../schema/types/database'
 import { getConversationDetails } from '../../../webAPI/conversations'
 import { getUser } from '../../../util'
 
 export class PostgreSQLSlackDataStore implements SlackDataStore {
   constructor(private db: PostgreSQLConnection) {}
+
+  /**
+   * Convert Slack timestamp string to JavaScript Date
+   * Slack timestamps are Unix timestamps with microseconds (e.g., "1750280265.049239")
+   */
+  private parseSlackTimestamp(slackTimestamp?: string): Date {
+    if (!slackTimestamp) {
+      return new Date()
+    }
+
+    try {
+      // Parse as float to handle the microseconds, then convert to milliseconds
+      const timestamp = parseFloat(slackTimestamp)
+      if (isNaN(timestamp)) {
+        logger.warn('Invalid Slack timestamp, using current time', { slackTimestamp })
+        return new Date()
+      }
+      
+      // Convert from seconds to milliseconds
+      return new Date(timestamp * 1000)
+    } catch (error) {
+      logger.warn('Failed to parse Slack timestamp, using current time', { slackTimestamp, error })
+      return new Date()
+    }
+  }
 
   // ===============================
   // User Management
@@ -349,38 +375,124 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
   // ===============================
 
   async storeMessage(message: CreateMessageInput): Promise<void> {
-    try {
-      // First, ensure conversation exists with enriched data
-      await this.enrichAndUpsertConversation(message.userId, message.slackChannelId)
+    // First, ensure conversation exists
+    await this.upsertConversation(message.userId, message.slackChannelId, {
+      userId: message.userId,
+      slackChannelId: message.slackChannelId,
+      type: 'channel', // Default, will be updated with real data later
+      isPrivate: false
+    })
+    
+    // Get conversation ID
+    const convResult = await this.db.query(
+      'SELECT id FROM conversations WHERE user_id = $1 AND slack_channel_id = $2',
+      [message.userId, message.slackChannelId]
+    )
+    
+    if (convResult.rows.length === 0) {
+      throw new Error(`Conversation not found for channel ${message.slackChannelId}`)
+    }
+    
+    const conversationId = convResult.rows[0].id
+    
+    // Store the message
+    await this.db.query(`
+      INSERT INTO messages (
+        user_id, conversation_id, slack_channel_id, message_ts, thread_ts,
+        text, message_type, subtype, slack_user_id, slack_user_name,
+        has_files, has_reactions, has_replies, reply_count, slack_timestamp
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+      ON CONFLICT (user_id, slack_channel_id, message_ts) DO UPDATE SET
+        text = EXCLUDED.text,
+        is_edited = true,
+        updated_at = NOW()
+    `, [
+      message.userId,
+      conversationId,
+      message.slackChannelId,
+      message.messageTs,
+      message.threadTs,
+      message.text,
+      message.messageType || 'message',
+      message.subtype,
+      message.slackUserId,
+      message.slackUserName,
+      message.hasFiles || false,
+      message.hasReactions || false,
+      message.hasReplies || false,
+      message.replyCount || 0,
+      this.parseSlackTimestamp(message.slackTimestamp)
+    ])
+    
+    // Update conversation last activity
+    await this.db.query(`
+      UPDATE conversations 
+      SET last_message_ts = $1, 
+          last_message_preview = $2,
+          last_activity_at = NOW(),
+          updated_at = NOW()
+      WHERE user_id = $3 AND slack_channel_id = $4
+    `, [
+      message.messageTs,
+      message.text?.substring(0, 100) || '',
+      message.userId,
+      message.slackChannelId
+    ])
+  }
 
-      // Get conversation and user UUIDs
-      const convResult = await this.db.query(`
-        SELECT c.id as conversation_id, u.id as user_id
-        FROM conversations c
-        JOIN users u ON c.user_id = u.id
-        WHERE u.anti_id = $1 AND c.slack_channel_id = $2
-      `, [message.userId, message.slackChannelId])
-
-      if (convResult.rows.length === 0) {
-        throw new Error(`Conversation not found for channel ${message.slackChannelId}`)
-      }
-
-      const { conversation_id, user_id } = convResult.rows[0]
-
-      // Store the message
-      await this.db.query(`
+  /**
+   * Store message quickly for Events API cache updates
+   * OPTIMIZED: Single transaction, minimal queries (1-2 max)
+   */
+  async storeMessageQuick(message: QuickMessageInput): Promise<void> {
+    await this.db.transaction(async (client) => {
+      // UPSERT conversation with minimal data
+      await client.query(`
+        INSERT INTO conversations (user_id, slack_channel_id, type, last_message_ts, last_activity_at)
+        VALUES (
+          (SELECT id FROM users WHERE anti_id = $1), 
+          $2, 
+          'channel', 
+          $3, 
+          NOW()
+        )
+        ON CONFLICT (user_id, slack_channel_id) 
+        DO UPDATE SET 
+          last_message_ts = EXCLUDED.last_message_ts,
+          last_activity_at = NOW(),
+          updated_at = NOW()
+      `, [message.userId, message.slackChannelId, message.messageTs])
+      
+      // Insert/update message
+      await client.query(`
         INSERT INTO messages (
-          user_id, conversation_id, slack_channel_id, message_ts, thread_ts,
-          text, message_type, subtype, slack_user_id, slack_user_name, bot_id,
-          has_files, has_reactions, has_replies, reply_count, slack_timestamp
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+          user_id, 
+          conversation_id, 
+          slack_channel_id, 
+          message_ts, 
+          thread_ts,
+          text, 
+          message_type, 
+          subtype, 
+          slack_user_id,
+          bot_id,
+          has_files, 
+          has_reactions, 
+          has_replies, 
+          reply_count, 
+          slack_timestamp
+        ) VALUES (
+          (SELECT id FROM users WHERE anti_id = $1),
+          (SELECT id FROM conversations WHERE user_id = (SELECT id FROM users WHERE anti_id = $1) AND slack_channel_id = $2),
+          $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+        )
         ON CONFLICT (user_id, slack_channel_id, message_ts) DO UPDATE SET
           text = EXCLUDED.text,
+          message_type = EXCLUDED.message_type,
           is_edited = true,
           updated_at = NOW()
       `, [
-        user_id,
-        conversation_id,
+        message.userId,
         message.slackChannelId,
         message.messageTs,
         message.threadTs,
@@ -388,45 +500,30 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
         message.messageType || 'message',
         message.subtype,
         message.slackUserId,
-        message.slackUserName,
         message.botId,
         message.hasFiles || false,
         message.hasReactions || false,
         message.hasReplies || false,
         message.replyCount || 0,
-        message.slackTimestamp ? new Date(parseFloat(message.slackTimestamp) * 1000) : new Date()
+        this.parseSlackTimestamp(message.slackTimestamp)
       ])
+    })
+  }
 
-      // Update conversation last activity
-      await this.db.query(`
-        UPDATE conversations 
-        SET last_message_ts = $1, 
-            last_message_preview = $2,
-            last_message_user_id = $3,
-            last_activity_at = NOW(),
-            updated_at = NOW()
-        WHERE user_id = $4 AND slack_channel_id = $5
-      `, [
-        message.messageTs,
-        message.text?.substring(0, 100) || '',
-        message.slackUserId,
-        user_id,
-        message.slackChannelId
-      ])
-
-      logger.info('Message stored successfully', {
-        userId: message.userId,
-        channel: message.slackChannelId,
-        messageTs: message.messageTs
-      })
-    } catch (error) {
-      logger.error('Failed to store message', error instanceof Error ? error : new Error(String(error)), {
-        userId: message.userId,
-        channel: message.slackChannelId,
-        messageTs: message.messageTs
-      })
-      throw error
-    }
+  /**
+   * Mark message as deleted in cache (for Events API)
+   * OPTIMIZED: Single query update
+   */
+  async markMessageDeleted(userId: string, channelId: string, messageTs: string): Promise<void> {
+    await this.db.query(`
+      UPDATE messages 
+      SET is_deleted = true, 
+          text = '[Message deleted]',
+          updated_at = NOW()
+      WHERE user_id = (SELECT id FROM users WHERE anti_id = $1) 
+        AND slack_channel_id = $2 
+        AND message_ts = $3
+    `, [userId, channelId, messageTs])
   }
 
   /**

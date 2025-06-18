@@ -20,7 +20,8 @@ import type {
   UpdateMessageInput,
   GetMessagesQuery,
   GetConversationsQuery,
-  SearchMessagesQuery
+  SearchMessagesQuery,
+  QuickMessageInput
 } from '../schema/types/database'
 
 export interface SlackDataStore {
@@ -92,6 +93,12 @@ export interface SlackDataStore {
   storeMessage(message: CreateMessageInput): Promise<void>
   
   /**
+   * Store message quickly for Events API cache updates
+   * Optimized for minimal database queries (1-2 queries max)
+   */
+  storeMessageQuick(message: QuickMessageInput): Promise<void>
+  
+  /**
    * Update existing message (edits, reactions, etc.)
    */
   updateMessage(userId: string, messageId: string, updates: UpdateMessageInput): Promise<void>
@@ -125,6 +132,11 @@ export interface SlackDataStore {
    * Search messages
    */
   searchMessages(query: SearchMessagesQuery): Promise<MessageWithFiles[]>
+  
+  /**
+   * Mark message as deleted in cache (for Events API)
+   */
+  markMessageDeleted(userId: string, channelId: string, messageTs: string): Promise<void>
 
   // ===============================
   // Rich Content Operations

@@ -2,7 +2,7 @@
 import { SlackEvent, SlackEventData } from '../types/events'
 import { logger } from '../../util/logger'
 import { getUser } from '../../util'
-import { handleMessageEvent, initializeMessageHandler } from './message'
+import { handleMessageEvent, setDataStore } from './message'
 import { handleUserEvent } from './user'
 import { createStorageContainer, type StorageContainer } from '../../storage'
 
@@ -18,7 +18,7 @@ export function initializeEventRouter() {
       storageContainer = createStorageContainer()
       
       // Initialize individual handlers with storage
-      initializeMessageHandler(storageContainer.dataStore)
+      setDataStore(storageContainer.dataStore)
       
       logger.info('Event router initialized with storage')
     }

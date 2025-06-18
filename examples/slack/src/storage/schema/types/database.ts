@@ -259,6 +259,23 @@ export interface CreateMessageInput {
   slackTimestamp?: string
 }
 
+export interface QuickMessageInput {
+  userId: string
+  slackChannelId: string
+  messageTs: string
+  threadTs?: string
+  text?: string
+  messageType?: 'message' | 'reply' | 'edit' | 'tombstone'
+  subtype?: string
+  slackUserId?: string
+  botId?: string
+  hasFiles?: boolean
+  hasReactions?: boolean
+  hasReplies?: boolean
+  replyCount?: number
+  slackTimestamp?: string
+}
+
 export interface UpdateMessageInput {
   text?: string
   messageType?: 'message' | 'reply' | 'edit' | 'tombstone'

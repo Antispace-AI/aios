@@ -1,7 +1,7 @@
 // Import PostgreSQL storage directly instead of using adapter
 import { createStorageContainer } from '../storage'
-import { SlackDataStore } from '../cache/interfaces/slack-data-store'
-import type { User } from '../cache/schema/types/database'
+import { SlackDataStore } from '../storage/interfaces/slack-data-store'
+import type { User } from '../storage/schema/types/database'
 
 // Re-export User type for backward compatibility
 export type { User }
