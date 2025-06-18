@@ -151,6 +151,16 @@ export interface SlackDataStore {
    * Update message reactions
    */
   updateMessageReactions(userId: string, messageId: string, reactions: Omit<MessageReaction, 'id' | 'userId' | 'messageId' | 'createdAt' | 'updatedAt'>[]): Promise<void>
+  
+  /**
+   * Add single reaction to message
+   */
+  addMessageReaction(userId: string, channelId: string, messageTs: string, reaction: Omit<MessageReaction, 'id' | 'userId' | 'messageId' | 'createdAt' | 'updatedAt'>): Promise<void>
+  
+  /**
+   * Remove single reaction from message
+   */
+  removeMessageReaction(userId: string, channelId: string, messageTs: string, emojiName: string): Promise<void>
 
   // ===============================
   // Data Export & Privacy

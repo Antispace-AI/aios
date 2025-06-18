@@ -35,6 +35,10 @@ const eventHandlers: Record<string, EventHandler> = {
   // Message events
   'message': handleMessageEvent,
   
+  // Reaction events
+  'reaction_added': handleReactionEvent,
+  'reaction_removed': handleReactionEvent,
+  
   // Channel marked events (unread count tracking)
   'channel_marked': handleChannelMarkedEvent,
   'group_marked': handleChannelMarkedEvent,
@@ -108,7 +112,7 @@ export async function routeSlackEvent(
     }
 
     // Execute handler
-    await handler(eventData, user.antiId)
+    await handler(eventData, user.id) // Use UUID for storage operations
 
     // Mark as processed
     addToDeduplicationCache(eventId)
@@ -134,7 +138,7 @@ export async function routeSlackEvent(
 /**
  * Find user by Slack team_id using PostgreSQL storage
  */
-async function findUserByTeamId(teamId: string): Promise<{ antiId: string } | null> {
+async function findUserByTeamId(teamId: string): Promise<{ antiId: string; id: string } | null> {
   try {
     if (!storageContainer?.dataStore) {
       logger.error('Storage container not available for user lookup')
@@ -143,7 +147,7 @@ async function findUserByTeamId(teamId: string): Promise<{ antiId: string } | nu
 
     // Query PostgreSQL directly for user with matching team_id
     const result = await storageContainer.connection.query(
-      'SELECT anti_id FROM users WHERE team_id = $1 LIMIT 1',
+      'SELECT id, anti_id FROM users WHERE team_id = $1 LIMIT 1',
       [teamId]
     )
 
@@ -152,13 +156,78 @@ async function findUserByTeamId(teamId: string): Promise<{ antiId: string } | nu
       return null
     }
 
+    const id = result.rows[0].id
     const antiId = result.rows[0].anti_id
-    logger.debug('Found user for team_id', { teamId, antiId })
-    return { antiId }
+    logger.debug('Found user for team_id', { teamId, antiId, id })
+    return { antiId, id }
 
   } catch (error) {
     logger.error('Error finding user by team_id', error instanceof Error ? error : new Error(String(error)), { teamId })
     return null
+  }
+}
+
+/**
+ * Handle reaction events (reaction_added, reaction_removed)
+ */
+async function handleReactionEvent(eventData: SlackEventData, userId: string): Promise<void> {
+  const event = eventData.event as any // Reaction event
+  
+  logger.info('Processing reaction event', {
+    eventType: eventData.eventType,
+    user: event.user,
+    reaction: event.reaction,
+    item: event.item,
+    userId
+  })
+
+  if (!storageContainer?.dataStore) {
+    logger.warn('Storage not available for reaction event')
+    return
+  }
+
+  try {
+    if (event.item?.type === 'message') {
+      // Update message reactions in storage
+      const messageTs = event.item.ts
+      const channel = event.item.channel
+      const reaction = event.reaction
+      const isAdded = eventData.eventType === 'reaction_added'
+      
+      logger.info('Updating message reaction', {
+        channel,
+        messageTs,
+        reaction,
+        isAdded,
+        userId
+      })
+
+      // Store/update reaction in database
+      if (isAdded) {
+        await storageContainer.dataStore.addMessageReaction(userId, channel, messageTs, {
+          emojiName: reaction,
+          count: 1, // Will be updated with actual count
+          usersReacted: [event.user], // Array of users who reacted
+          userReacted: event.user === userId // Check if this user added the reaction
+        })
+      } else {
+        await storageContainer.dataStore.removeMessageReaction(userId, channel, messageTs, reaction)
+      }
+
+      logger.info('Message reaction updated successfully', {
+        channel,
+        messageTs,
+        reaction,
+        isAdded,
+        userId
+      })
+    }
+  } catch (error) {
+    logger.error('Failed to process reaction event', error instanceof Error ? error : new Error(String(error)), {
+      eventType: eventData.eventType,
+      userId,
+      item: event.item
+    })
   }
 }
 

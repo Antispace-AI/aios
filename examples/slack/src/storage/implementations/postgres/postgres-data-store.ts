@@ -447,15 +447,10 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
   async storeMessageQuick(message: QuickMessageInput): Promise<void> {
     await this.db.transaction(async (client) => {
       // UPSERT conversation with minimal data
+      // message.userId is now a UUID, use it directly
       await client.query(`
         INSERT INTO conversations (user_id, slack_channel_id, type, last_message_ts, last_activity_at)
-        VALUES (
-          (SELECT id FROM users WHERE anti_id = $1), 
-          $2, 
-          'channel', 
-          $3, 
-          NOW()
-        )
+        VALUES ($1, $2, 'channel', $3, NOW())
         ON CONFLICT (user_id, slack_channel_id) 
         DO UPDATE SET 
           last_message_ts = EXCLUDED.last_message_ts,
@@ -464,6 +459,7 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
       `, [message.userId, message.slackChannelId, message.messageTs])
       
       // Insert/update message
+      // message.userId is now a UUID, use it directly
       await client.query(`
         INSERT INTO messages (
           user_id, 
@@ -482,8 +478,8 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
           reply_count, 
           slack_timestamp
         ) VALUES (
-          (SELECT id FROM users WHERE anti_id = $1),
-          (SELECT id FROM conversations WHERE user_id = (SELECT id FROM users WHERE anti_id = $1) AND slack_channel_id = $2),
+          $1,
+          (SELECT id FROM conversations WHERE user_id = $1 AND slack_channel_id = $2),
           $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
         )
         ON CONFLICT (user_id, slack_channel_id, message_ts) DO UPDATE SET
@@ -492,7 +488,7 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
           is_edited = true,
           updated_at = NOW()
       `, [
-        message.userId,
+        message.userId, // Now a UUID
         message.slackChannelId,
         message.messageTs,
         message.threadTs,
@@ -520,7 +516,7 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
       SET is_deleted = true, 
           text = '[Message deleted]',
           updated_at = NOW()
-      WHERE user_id = (SELECT id FROM users WHERE anti_id = $1) 
+      WHERE user_id = $1 
         AND slack_channel_id = $2 
         AND message_ts = $3
     `, [userId, channelId, messageTs])
@@ -704,6 +700,81 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
       return timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     } else {
       return timestamp.toLocaleDateString()
+    }
+  }
+
+  // ===============================
+  // Message Reactions
+  // ===============================
+
+  async addMessageReaction(userId: string, channelId: string, messageTs: string, reaction: Omit<MessageReaction, 'id' | 'userId' | 'messageId' | 'createdAt' | 'updatedAt'>): Promise<void> {
+    logger.info('Adding message reaction', { userId, channelId, messageTs, reaction: reaction.emojiName })
+    
+    const client = await this.db.query('BEGIN')
+    
+    try {
+      // Get message ID
+      const messageResult = await this.db.query(`
+        SELECT id FROM messages 
+        WHERE user_id = $1 AND slack_channel_id = $2 AND message_ts = $3
+      `, [userId, channelId, messageTs])
+      
+      if (messageResult.rows.length === 0) {
+        logger.warn('Message not found for reaction', { userId, channelId, messageTs })
+        return
+      }
+      
+      const messageId = messageResult.rows[0].id
+      
+      // Upsert reaction (update count if exists, insert if not)
+      await this.db.query(`
+        INSERT INTO message_reactions (user_id, message_id, emoji_name, count, user_reacted)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (user_id, message_id, emoji_name) 
+        DO UPDATE SET 
+          count = EXCLUDED.count,
+          user_reacted = EXCLUDED.user_reacted,
+          updated_at = NOW()
+      `, [userId, messageId, reaction.emojiName, reaction.count, reaction.userReacted])
+      
+      await this.db.query('COMMIT')
+      logger.info('Message reaction added successfully', { userId, channelId, messageTs, reaction: reaction.emojiName })
+      
+    } catch (error) {
+      await this.db.query('ROLLBACK')
+      logger.error('Failed to add message reaction', error instanceof Error ? error : new Error(String(error)), { userId, channelId, messageTs })
+      throw error
+    }
+  }
+
+  async removeMessageReaction(userId: string, channelId: string, messageTs: string, emojiName: string): Promise<void> {
+    logger.info('Removing message reaction', { userId, channelId, messageTs, emojiName })
+    
+    try {
+      // Get message ID
+      const messageResult = await this.db.query(`
+        SELECT id FROM messages 
+        WHERE user_id = $1 AND slack_channel_id = $2 AND message_ts = $3
+      `, [userId, channelId, messageTs])
+      
+      if (messageResult.rows.length === 0) {
+        logger.warn('Message not found for reaction removal', { userId, channelId, messageTs })
+        return
+      }
+      
+      const messageId = messageResult.rows[0].id
+      
+      // Remove reaction
+      await this.db.query(`
+        DELETE FROM message_reactions 
+        WHERE user_id = $1 AND message_id = $2 AND emoji_name = $3
+      `, [userId, messageId, emojiName])
+      
+      logger.info('Message reaction removed successfully', { userId, channelId, messageTs, emojiName })
+      
+    } catch (error) {
+      logger.error('Failed to remove message reaction', error instanceof Error ? error : new Error(String(error)), { userId, channelId, messageTs })
+      throw error
     }
   }
 
