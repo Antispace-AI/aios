@@ -1,4 +1,4 @@
-import { SlackDataStore } from '../../interfaces/slack-data-store'
+import { SlackDataStore } from '../../../cache/interfaces/slack-data-store'
 import { PostgreSQLConnection } from './connection'
 import { logger } from '../../../util/logger'
 import type {
@@ -21,7 +21,7 @@ import type {
   GetMessagesQuery,
   GetConversationsQuery,
   SearchMessagesQuery
-} from '../../schema/types/database'
+} from '../../../cache/schema/types/database'
 import { getConversationDetails } from '../../../webAPI/conversations'
 import { getUser } from '../../../util'
 

@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS messages (
   subtype VARCHAR(50),                    -- Slack message subtype
   
   -- Message metadata
-  slack_user_id VARCHAR(50) NOT NULL,     -- Who sent the message
+  slack_user_id VARCHAR(50),              -- Who sent the message (nullable for bots/system)
   slack_user_name VARCHAR(255),           -- Sender's display name
   bot_id VARCHAR(50),                     -- If sent by a bot
   

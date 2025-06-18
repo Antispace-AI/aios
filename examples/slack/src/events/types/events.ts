@@ -45,7 +45,7 @@ export interface SlackEvent {
 export interface SlackMessageEvent extends SlackEvent {
   type: 'message'
   channel: string
-  user: string
+  user?: string
   text: string
   ts: string
   thread_ts?: string

@@ -1,11 +1,11 @@
 // Main storage module exports
 // This file provides the public interface for all storage operations
 
-// Storage interfaces (no implementation code)
-export * from './interfaces'
+// Storage interfaces (moved to cache)
+export * from '../cache/interfaces'
 
-// Database types and schemas
-export * from './schema/types'
+// Database types and schemas (moved to cache)
+export * from '../cache/schema/types'
 
 // PostgreSQL implementation
 export { PostgreSQLConnection } from './implementations/postgres/connection'

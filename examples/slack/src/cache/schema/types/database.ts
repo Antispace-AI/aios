@@ -51,7 +51,7 @@ export interface Message {
   text?: string // encrypted
   messageType: 'message' | 'reply' | 'edit' | 'tombstone'
   subtype?: string
-  slackUserId: string
+  slackUserId?: string // Nullable for bot messages and system messages
   slackUserName?: string
   botId?: string
   hasFiles: boolean
@@ -249,7 +249,7 @@ export interface CreateMessageInput {
   text?: string
   messageType?: 'message' | 'reply' | 'edit' | 'tombstone'
   subtype?: string
-  slackUserId: string
+  slackUserId?: string // Made optional to handle bot messages and system messages
   slackUserName?: string
   botId?: string
   hasFiles?: boolean
