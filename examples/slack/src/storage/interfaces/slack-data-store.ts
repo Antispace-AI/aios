@@ -192,6 +192,77 @@ export interface SlackDataStore {
   }>
 
   // ===============================
+  // Data Synchronization (Week 5)
+  // ===============================
+  
+  /**
+   * Store multiple messages in batch for efficient sync
+   */
+  storeBatchMessages(messages: CreateMessageInput[]): Promise<void>
+  
+  /**
+   * Store multiple conversations in batch for efficient sync
+   */
+  upsertBatchConversations(conversations: Array<{
+    userId: string
+    slackChannelId: string
+    name: string
+    displayName: string
+    type: string
+    isPrivate: boolean
+    isArchived: boolean
+    isMember: boolean
+    memberCount: number
+    lastMessageTs?: string
+    lastMessagePreview?: string
+  }>): Promise<void>
+  
+  /**
+   * Sync user profiles for message attribution
+   */
+  syncUserProfiles(profiles: Array<{
+    slackUserId: string
+    realName: string
+    displayName: string
+    avatarUrl?: string
+  }>): Promise<void>
+  
+  /**
+   * Get sync state for user/conversation
+   */
+  getSyncState(userId: string, conversationId?: string): Promise<{
+    lastSyncTs: Date
+    syncStatus: 'pending' | 'in_progress' | 'completed' | 'failed'
+    lastMessageTs?: string
+    messagesSynced: number
+    conversationsSynced: number
+  } | null>
+  
+  /**
+   * Update sync state tracking
+   */
+  updateSyncState(state: {
+    userId: string
+    conversationId?: string
+    syncStatus: 'pending' | 'in_progress' | 'completed' | 'failed'
+    messagesSynced?: number
+    conversationsSynced?: number
+    syncDurationMs?: number
+    errorMessage?: string
+  }): Promise<void>
+  
+  /**
+   * Get all sync states for a user
+   */
+  getAllSyncStates(userId: string): Promise<Array<{
+    conversationId?: string
+    lastSyncTs: Date
+    syncStatus: string
+    lastMessageTs?: string
+    messagesSynced: number
+  }>>
+
+  // ===============================
   // Data Export & Privacy
   // ===============================
   

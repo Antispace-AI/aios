@@ -268,6 +268,38 @@ CREATE TRIGGER update_reactions_updated_at BEFORE UPDATE ON message_reactions
   FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- ===============================
+-- 8. SYNC_STATE TABLE
+-- Track data synchronization progress
+-- ===============================
+CREATE TABLE IF NOT EXISTS sync_state (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  conversation_id VARCHAR(50),             -- Slack channel ID (NULL for global sync)
+  last_sync_ts TIMESTAMP WITH TIME ZONE NOT NULL,
+  sync_status VARCHAR(20) NOT NULL DEFAULT 'pending', -- 'pending', 'in_progress', 'completed', 'failed'
+  last_message_ts VARCHAR(50),             -- Last message timestamp synced
+  messages_synced INTEGER DEFAULT 0,       -- Number of messages synced in last run
+  conversations_synced INTEGER DEFAULT 0,  -- Number of conversations synced in last run
+  sync_duration_ms INTEGER DEFAULT 0,      -- How long the sync took
+  error_message TEXT,                      -- Last error message if failed
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  
+  -- One sync state per user per conversation (or global)
+  UNIQUE(user_id, conversation_id)
+);
+
+-- Sync state indexes
+CREATE INDEX IF NOT EXISTS idx_sync_state_user 
+  ON sync_state(user_id, last_sync_ts DESC);
+CREATE INDEX IF NOT EXISTS idx_sync_state_status 
+  ON sync_state(sync_status, created_at) WHERE sync_status IN ('pending', 'failed');
+
+-- Add sync_state to the updated_at trigger
+CREATE TRIGGER update_sync_state_updated_at BEFORE UPDATE ON sync_state 
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- ===============================
 -- SCHEMA VALIDATION COMPLETE
 -- ===============================
 
@@ -275,7 +307,7 @@ CREATE TRIGGER update_reactions_updated_at BEFORE UPDATE ON message_reactions
 DO $$
 BEGIN
   RAISE NOTICE 'Slack App PostgreSQL schema created successfully!';
-  RAISE NOTICE 'Tables: users, conversations, messages, threads, message_files, message_reactions, event_queue';
-  RAISE NOTICE 'Indexes: Optimized for conversation list and message history queries';
-  RAISE NOTICE 'Ready for Week 3 storage implementation';
+  RAISE NOTICE 'Tables: users, conversations, messages, threads, message_files, message_reactions, event_queue, sync_state';
+  RAISE NOTICE 'Indexes: Optimized for conversation list, message history, and sync tracking queries';
+  RAISE NOTICE 'Ready for data pull system implementation';
 END $$; 

@@ -860,6 +860,301 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
   }
 
   // ===============================
+  // Data Synchronization Methods (Week 5)
+  // ===============================
+
+  /**
+   * Store multiple messages in batch for efficient sync
+   */
+  async storeBatchMessages(messages: CreateMessageInput[]): Promise<void> {
+    if (messages.length === 0) return
+
+    logger.info('Storing batch messages', { messageCount: messages.length })
+
+    const client = await this.db.query('BEGIN')
+    
+    try {
+      // Prepare batch insert with conflict resolution
+      const values: string[] = []
+      const params: any[] = []
+      let paramIndex = 1
+
+      for (const msg of messages) {
+        // Get or create conversation
+        await this.enrichAndUpsertConversation(msg.userId, msg.slackChannelId)
+        
+        // Get conversation ID
+        const convResult = await this.db.query(
+          'SELECT id FROM conversations WHERE user_id = $1 AND slack_channel_id = $2',
+          [msg.userId, msg.slackChannelId]
+        )
+        
+        if (convResult.rows.length === 0) {
+          logger.warn('Failed to find conversation for batch message', { userId: msg.userId, channelId: msg.slackChannelId })
+          continue
+        }
+        
+        const conversationId = convResult.rows[0].id
+        
+        values.push(`($${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++})`)
+        
+        params.push(
+          msg.userId,
+          conversationId,
+          msg.slackChannelId,
+          msg.messageTs,
+          msg.threadTs || null,
+          msg.text || '',
+          msg.messageType || 'message',
+          msg.subtype || null,
+          msg.slackUserId || null,
+          msg.slackUserName || null,
+          msg.hasFiles || false,
+          msg.hasReactions || false,
+          msg.hasReplies || false,
+          msg.slackTimestamp ? this.parseSlackTimestamp(msg.slackTimestamp) : new Date()
+        )
+      }
+
+      if (values.length > 0) {
+        const query = `
+          INSERT INTO messages (
+            user_id, conversation_id, slack_channel_id, message_ts, thread_ts,
+            text, message_type, subtype, slack_user_id, slack_user_name,
+            has_files, has_reactions, has_replies, slack_timestamp
+          ) VALUES ${values.join(', ')}
+          ON CONFLICT (user_id, slack_channel_id, message_ts) DO UPDATE SET
+            text = EXCLUDED.text,
+            is_edited = true,
+            updated_at = NOW()
+        `
+        
+        await this.db.query(query, params)
+      }
+
+      await this.db.query('COMMIT')
+      logger.info('Batch messages stored successfully', { messageCount: messages.length })
+      
+    } catch (error) {
+      await this.db.query('ROLLBACK')
+      logger.error('Failed to store batch messages', error instanceof Error ? error : new Error(String(error)))
+      throw error
+    }
+  }
+
+  /**
+   * Store multiple conversations in batch for efficient sync
+   */
+  async upsertBatchConversations(conversations: Array<{
+    userId: string
+    slackChannelId: string
+    name: string
+    displayName: string
+    type: string
+    isPrivate: boolean
+    isArchived: boolean
+    isMember: boolean
+    memberCount: number
+    lastMessageTs?: string
+    lastMessagePreview?: string
+  }>): Promise<void> {
+    if (conversations.length === 0) return
+
+    logger.info('Upserting batch conversations', { conversationCount: conversations.length })
+
+    const client = await this.db.query('BEGIN')
+    
+    try {
+      for (const conv of conversations) {
+        await this.db.query(`
+          INSERT INTO conversations (
+            user_id, slack_channel_id, name, display_name, type,
+            is_private, is_archived, is_member, member_count,
+            last_message_ts, last_message_preview, last_activity_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
+          ON CONFLICT (user_id, slack_channel_id) DO UPDATE SET
+            name = EXCLUDED.name,
+            display_name = EXCLUDED.display_name,
+            type = EXCLUDED.type,
+            is_private = EXCLUDED.is_private,
+            is_archived = EXCLUDED.is_archived,
+            is_member = EXCLUDED.is_member,
+            member_count = EXCLUDED.member_count,
+            last_message_ts = COALESCE(EXCLUDED.last_message_ts, conversations.last_message_ts),
+            last_message_preview = COALESCE(EXCLUDED.last_message_preview, conversations.last_message_preview),
+            last_activity_at = GREATEST(conversations.last_activity_at, NOW()),
+            updated_at = NOW()
+        `, [
+          conv.userId,
+          conv.slackChannelId,
+          conv.name,
+          conv.displayName,
+          conv.type,
+          conv.isPrivate,
+          conv.isArchived,
+          conv.isMember,
+          conv.memberCount,
+          conv.lastMessageTs,
+          conv.lastMessagePreview
+        ])
+      }
+
+      await this.db.query('COMMIT')
+      logger.info('Batch conversations upserted successfully', { conversationCount: conversations.length })
+      
+    } catch (error) {
+      await this.db.query('ROLLBACK')
+      logger.error('Failed to upsert batch conversations', error instanceof Error ? error : new Error(String(error)))
+      throw error
+    }
+  }
+
+  /**
+   * Sync user profiles for message attribution
+   */
+  async syncUserProfiles(profiles: Array<{
+    slackUserId: string
+    realName: string
+    displayName: string
+    avatarUrl?: string
+  }>): Promise<void> {
+    if (profiles.length === 0) return
+
+    logger.info('Syncing user profiles', { profileCount: profiles.length })
+
+    try {
+      // For now, we'll store this as a simple lookup table
+      // In the future, this could be a dedicated user_profiles table
+      // For MVP, we'll just log the profiles for message attribution
+      for (const profile of profiles) {
+        logger.debug('User profile cached', {
+          slackUserId: profile.slackUserId,
+          displayName: profile.displayName,
+          realName: profile.realName
+        })
+      }
+      
+      logger.info('User profiles synced successfully', { profileCount: profiles.length })
+      
+    } catch (error) {
+      logger.error('Failed to sync user profiles', error instanceof Error ? error : new Error(String(error)))
+      throw error
+    }
+  }
+
+  /**
+   * Get sync state for user/conversation
+   */
+  async getSyncState(userId: string, conversationId?: string): Promise<{
+    lastSyncTs: Date
+    syncStatus: 'pending' | 'in_progress' | 'completed' | 'failed'
+    lastMessageTs?: string
+    messagesSynced: number
+    conversationsSynced: number
+  } | null> {
+    try {
+      const result = await this.db.query(`
+        SELECT last_sync_ts, sync_status, last_message_ts, messages_synced, conversations_synced
+        FROM sync_state 
+        WHERE user_id = $1 AND ($2::text IS NULL OR conversation_id = $2)
+        ORDER BY last_sync_ts DESC
+        LIMIT 1
+      `, [userId, conversationId])
+
+      if (result.rows.length === 0) {
+        return null
+      }
+
+      const row = result.rows[0]
+      return {
+        lastSyncTs: row.last_sync_ts,
+        syncStatus: row.sync_status,
+        lastMessageTs: row.last_message_ts,
+        messagesSynced: row.messages_synced || 0,
+        conversationsSynced: row.conversations_synced || 0
+      }
+      
+    } catch (error) {
+      logger.error('Failed to get sync state', error instanceof Error ? error : new Error(String(error)))
+      throw error
+    }
+  }
+
+  /**
+   * Update sync state tracking
+   */
+  async updateSyncState(state: {
+    userId: string
+    conversationId?: string
+    syncStatus: 'pending' | 'in_progress' | 'completed' | 'failed'
+    messagesSynced?: number
+    conversationsSynced?: number
+    syncDurationMs?: number
+    errorMessage?: string
+  }): Promise<void> {
+    try {
+      await this.db.query(`
+        INSERT INTO sync_state (
+          user_id, conversation_id, last_sync_ts, sync_status, 
+          messages_synced, conversations_synced, sync_duration_ms, error_message
+        ) VALUES ($1, $2, NOW(), $3, $4, $5, $6, $7)
+        ON CONFLICT (user_id, conversation_id) DO UPDATE SET
+          last_sync_ts = NOW(),
+          sync_status = EXCLUDED.sync_status,
+          messages_synced = EXCLUDED.messages_synced,
+          conversations_synced = EXCLUDED.conversations_synced,
+          sync_duration_ms = EXCLUDED.sync_duration_ms,
+          error_message = EXCLUDED.error_message,
+          updated_at = NOW()
+      `, [
+        state.userId,
+        state.conversationId,
+        state.syncStatus,
+        state.messagesSynced || 0,
+        state.conversationsSynced || 0,
+        state.syncDurationMs || 0,
+        state.errorMessage
+      ])
+      
+    } catch (error) {
+      logger.error('Failed to update sync state', error instanceof Error ? error : new Error(String(error)))
+      throw error
+    }
+  }
+
+  /**
+   * Get all sync states for a user
+   */
+  async getAllSyncStates(userId: string): Promise<Array<{
+    conversationId?: string
+    lastSyncTs: Date
+    syncStatus: string
+    lastMessageTs?: string
+    messagesSynced: number
+  }>> {
+    try {
+      const result = await this.db.query(`
+        SELECT conversation_id, last_sync_ts, sync_status, last_message_ts, messages_synced
+        FROM sync_state 
+        WHERE user_id = $1
+        ORDER BY last_sync_ts DESC
+      `, [userId])
+
+      return result.rows.map(row => ({
+        conversationId: row.conversation_id,
+        lastSyncTs: row.last_sync_ts,
+        syncStatus: row.sync_status,
+        lastMessageTs: row.last_message_ts,
+        messagesSynced: row.messages_synced || 0
+      }))
+      
+    } catch (error) {
+      logger.error('Failed to get all sync states', error instanceof Error ? error : new Error(String(error)))
+      throw error
+    }
+  }
+
+  // ===============================
   // Not Yet Implemented (TODO)
   // ===============================
 

@@ -196,7 +196,8 @@ export class SlackClientPool {
     if (this.clients.size <= this.maxClients) return
     
     // Remove expired clients
-    for (const [token, lastUsed] of this.lastUsed.entries()) {
+    const entries = Array.from(this.lastUsed.entries())
+    for (const [token, lastUsed] of entries) {
       if (now - lastUsed > this.clientTTL) {
         this.clients.delete(token)
         this.lastUsed.delete(token)

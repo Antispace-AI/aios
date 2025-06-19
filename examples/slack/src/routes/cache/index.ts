@@ -2,6 +2,7 @@ import { getUser } from '../../util'
 import { createStorageContainer } from '../../storage/implementations/postgres/container'
 import { logger } from '../../util/logger'
 import { getCleanupStatus, startCleanupScheduler, isCleanupSchedulerRunning } from '../../storage/cleanup-scheduler'
+import { SlackSyncOrchestrator } from '../../storage/data-sync'
 
 /**
  * Cache Management Endpoints for Week 4
@@ -21,6 +22,12 @@ interface RefreshResult {
   scope?: string
   message?: string
   error?: string
+  syncStats?: {
+    conversationsSync: number
+    messagesSync: number
+    usersSync: number
+    duration: number
+  }
 }
 
 /**
@@ -42,11 +49,12 @@ export async function getCacheStatus(antiId: string): Promise<CacheStatus> {
 
 /**
  * Manual cache refresh for users
+ * ENHANCED: Now performs real Slack data pull using the sync orchestrator
  * Scope: Recent messages (last 7 days) for performance
  */
-export async function refreshUserCache(antiId: string): Promise<RefreshResult> {
+export async function refreshUserCache(antiId: string, options: { incremental?: boolean } = {}): Promise<RefreshResult> {
   try {
-    logger.info('Manual cache refresh initiated', { antiId })
+    logger.info('Manual cache refresh initiated - pulling real Slack data', { antiId, options })
     
     const { dataStore } = createStorageContainer()
     const user = await dataStore.getUser(antiId)
@@ -55,17 +63,44 @@ export async function refreshUserCache(antiId: string): Promise<RefreshResult> {
       return { success: false, error: 'User not found' }
     }
 
-    // For now, just touch activity - actual Slack data pull will be implemented in Task 4.2
-    // This simulates cache refresh by extending the session
+    // Create sync orchestrator for this user
+    const orchestrator = new SlackSyncOrchestrator(dataStore, antiId)
+    
+    // Determine sync type based on cache state and options
+    const shouldPerformFullSync = options.incremental ? false : await orchestrator.shouldPerformFullSync()
+    
+    // Perform the appropriate sync
+    const syncResult = shouldPerformFullSync 
+      ? await orchestrator.fullSync()
+      : await orchestrator.incrementalSync()
+    
+    if (!syncResult.success) {
+      return { 
+        success: false, 
+        error: `Sync failed: ${syncResult.errors.join(', ')}` 
+      }
+    }
+    
+    // Touch activity to extend session after successful sync
     await dataStore.touchUserActivity(antiId)
     
-    logger.info('Cache refresh completed', { antiId, scope: 'Recent 7 days' })
+    logger.info('Cache refresh completed with real Slack data', {
+      antiId,
+      syncType: shouldPerformFullSync ? 'full' : 'incremental',
+      ...syncResult
+    })
     
     return { 
       success: true, 
       refreshedAt: new Date(),
-      scope: 'Recent 7 days',
-      message: 'Cache session extended successfully'
+      scope: `${syncResult.timeWindow} of Slack data`,
+      message: `Synced ${syncResult.conversationsSync} conversations, ${syncResult.messagesSync} messages`,
+      syncStats: {
+        conversationsSync: syncResult.conversationsSync,
+        messagesSync: syncResult.messagesSync,
+        usersSync: syncResult.usersSync,
+        duration: syncResult.duration
+      }
     }
   } catch (error) {
     logger.error('Failed to refresh cache', error instanceof Error ? error : new Error(String(error)), { antiId })

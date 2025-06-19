@@ -1,6 +1,7 @@
 import { getUser } from '../../util'
 import { createStorageContainer } from '../../storage/implementations/postgres/container'
 import { logger } from '../../util/logger'
+import { SlackSyncOrchestrator } from '../../storage/data-sync'
 
 /**
  * Widget Data Endpoint for Week 4
@@ -19,10 +20,12 @@ interface WidgetData {
   isActive: boolean
   lastRefresh?: string
   error?: string
+  backgroundSyncTriggered?: boolean
 }
 
 /**
  * Get optimized data for Widget UI component
+ * ENHANCED: Now triggers background sync when cache is empty
  */
 export async function getWidgetData(antiId: string): Promise<WidgetData> {
   try {
@@ -48,6 +51,33 @@ export async function getWidgetData(antiId: string): Promise<WidgetData> {
       dataStore.isUserCacheActive(antiId)
     ])
     
+    // Check if cache is empty and trigger background sync
+    let backgroundSyncTriggered = false
+    if (unreadSummary.totalUnread === 0 && conversations.length === 0) {
+      logger.info('First widget access or empty cache - initiating background data sync', { antiId })
+      
+      // Trigger background sync without blocking the response
+      setImmediate(async () => {
+        try {
+          const orchestrator = new SlackSyncOrchestrator(dataStore, antiId)
+          const syncResult = await orchestrator.fullSync()
+          logger.info('Background sync completed for widget access', {
+            antiId,
+            success: syncResult.success,
+            conversationsSync: syncResult.conversationsSync,
+            messagesSync: syncResult.messagesSync
+          })
+        } catch (error) {
+          logger.warn('Background sync failed for widget access', { 
+            antiId, 
+            error: error instanceof Error ? error.message : error 
+          })
+        }
+      })
+      
+      backgroundSyncTriggered = true
+    }
+    
     return {
       totalUnread: unreadSummary.totalUnread,
       conversations: conversations.map(conv => ({
@@ -58,7 +88,8 @@ export async function getWidgetData(antiId: string): Promise<WidgetData> {
         lastActivity: conv.formattedTime
       })),
       isActive: cacheStatus,
-      lastRefresh: user.updatedAt
+      lastRefresh: user.updatedAt,
+      backgroundSyncTriggered
     }
   } catch (error) {
     logger.error('Failed to get widget data', error instanceof Error ? error : new Error(String(error)), { antiId })

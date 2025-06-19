@@ -12,4 +12,7 @@ export * from './schema/types'
 export { PostgreSQLConnection } from './implementations/postgres/connection'
 export { PostgreSQLSlackDataStore } from './implementations/postgres/postgres-data-store'
 export { createStorageContainer } from './implementations/postgres/container'
-export type { StorageContainer } from './implementations/postgres/container' 
+export type { StorageContainer } from './implementations/postgres/container'
+
+// Data synchronization system (Week 5)
+export * from './data-sync' 
