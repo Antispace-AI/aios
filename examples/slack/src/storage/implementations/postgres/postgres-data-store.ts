@@ -634,6 +634,87 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
   }
 
   // ===============================
+  // Session Management (Week 4)
+  // ===============================
+
+  /**
+   * Touch user activity to extend cache session
+   */
+  async touchUserActivity(antiId: string): Promise<void> {
+    await this.db.query(
+      'UPDATE users SET updated_at = NOW() WHERE anti_id = $1',
+      [antiId]
+    )
+    logger.debug('User activity touched', { antiId })
+  }
+
+  /**
+   * Check if user cache is still active (within 1 hour)
+   */
+  async isUserCacheActive(antiId: string): Promise<boolean> {
+    const result = await this.db.query(
+      'SELECT updated_at FROM users WHERE anti_id = $1 AND updated_at > NOW() - INTERVAL \'1 hour\'',
+      [antiId]
+    )
+    return result.rows.length > 0
+  }
+
+  /**
+   * Clean up inactive users (cache expired after 1 hour)
+   */
+  async cleanupInactiveUsers(): Promise<string[]> {
+    const result = await this.db.query(`
+      DELETE FROM users 
+      WHERE updated_at < NOW() - INTERVAL '1 hour'
+      RETURNING anti_id
+    `)
+    
+    const cleanedUserIds = result.rows.map(row => row.anti_id)
+    logger.info('Cleaned up inactive users', { count: cleanedUserIds.length, userIds: cleanedUserIds })
+    return cleanedUserIds
+  }
+
+  /**
+   * Get cache status for a user
+   */
+  async getCacheStatus(antiId: string): Promise<{
+    isActive: boolean
+    lastActivity?: string
+    messageCount: number
+    conversationCount: number
+  }> {
+    const user = await this.getUser(antiId)
+    if (!user) {
+      return {
+        isActive: false,
+        messageCount: 0,
+        conversationCount: 0
+      }
+    }
+
+    const isActive = await this.isUserCacheActive(antiId)
+    
+    // Get counts for last 7 days
+    const [messageResult, conversationResult] = await Promise.all([
+      this.db.query(
+        'SELECT COUNT(*) FROM messages WHERE user_id = $1 AND created_at > NOW() - INTERVAL \'7 days\'',
+        [user.id]
+      ),
+      this.db.query(
+        'SELECT COUNT(*) FROM conversations WHERE user_id = $1',
+        [user.id]
+      )
+    ])
+
+    return {
+      isActive,
+      lastActivity: user.updatedAt,
+      messageCount: parseInt(messageResult.rows[0].count),
+      conversationCount: parseInt(conversationResult.rows[0].count)
+    }
+  }
+
+  // ===============================
   // Health Check
   // ===============================
 

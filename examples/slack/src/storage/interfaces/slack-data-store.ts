@@ -163,6 +163,35 @@ export interface SlackDataStore {
   removeMessageReaction(userId: string, channelId: string, messageTs: string, emojiName: string): Promise<void>
 
   // ===============================
+  // Session Management (Week 4)
+  // ===============================
+  
+  /**
+   * Touch user activity to extend cache session
+   */
+  touchUserActivity(antiId: string): Promise<void>
+  
+  /**
+   * Check if user cache is still active (within 1 hour)
+   */
+  isUserCacheActive(antiId: string): Promise<boolean>
+  
+  /**
+   * Clean up inactive users (cache expired after 1 hour)
+   */
+  cleanupInactiveUsers(): Promise<string[]>
+  
+  /**
+   * Get cache status for a user
+   */
+  getCacheStatus(antiId: string): Promise<{
+    isActive: boolean
+    lastActivity?: string
+    messageCount: number
+    conversationCount: number
+  }>
+
+  // ===============================
   // Data Export & Privacy
   // ===============================
   

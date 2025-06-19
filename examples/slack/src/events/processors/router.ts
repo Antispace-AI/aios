@@ -114,6 +114,15 @@ export async function routeSlackEvent(
     // Execute handler
     await handler(eventData, user.id) // Use UUID for storage operations
 
+    // Touch user activity to extend cache session (Week 4)
+    if (storageContainer?.dataStore) {
+      try {
+        await storageContainer.dataStore.touchUserActivity(user.antiId)
+      } catch (error) {
+        logger.warn('Failed to touch user activity', { antiId: user.antiId, error })
+      }
+    }
+
     // Mark as processed
     addToDeduplicationCache(eventId)
 

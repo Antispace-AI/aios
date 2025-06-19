@@ -6,23 +6,40 @@ import type { User } from '../storage/schema/types/database'
 // Re-export User type for backward compatibility
 export type { User }
 
-// Create storage instance
-const { dataStore } = createStorageContainer()
+// Lazy-load storage instance to avoid circular dependencies
+let dataStore: SlackDataStore | null = null
+
+function getDataStore(): SlackDataStore {
+  if (!dataStore) {
+    const { dataStore: ds } = createStorageContainer()
+    dataStore = ds
+  }
+  return dataStore
+}
 
 /**
  * Get or create a user by their Antispace user ID
+ * Also touches user activity for session management
  */
 export const getUser = async (userID: string): Promise<any> => {
+  const store = getDataStore()
+  
   // First, try to get existing user
-  const existingUser = await dataStore.getUser(userID)
+  const existingUser = await store.getUser(userID)
 
   if (existingUser) {
+    // Touch user activity for session management (Week 4)
+    try {
+      await store.touchUserActivity(userID)
+    } catch (error) {
+      console.warn(`Failed to touch activity for user ${userID}:`, error)
+    }
     return existingUser
   }
 
   // User doesn't exist, create a new one
   console.log(`Creating new user record for ${userID}`)
-  return await dataStore.createUser({ antiId: userID })
+  return await store.createUser({ antiId: userID })
 }
 
 /**
@@ -30,7 +47,8 @@ export const getUser = async (userID: string): Promise<any> => {
  */
 export const isUserAuthenticated = async (userID: string): Promise<boolean> => {
   try {
-    const user = await dataStore.getUser(userID)
+    const store = getDataStore()
+    const user = await store.getUser(userID)
     return !!(user && user.accessToken && user.accessToken.trim().length > 0)
   } catch (error) {
     console.error(`Error checking authentication for user ${userID}:`, error)
@@ -43,13 +61,14 @@ export const isUserAuthenticated = async (userID: string): Promise<boolean> => {
  */
 export const clearUserTokens = async (userID: string): Promise<boolean> => {
   try {
-    const user = await dataStore.getUser(userID)
+    const store = getDataStore()
+    const user = await store.getUser(userID)
     if (!user) {
       return false // User doesn't exist
     }
 
     // Clear auth-related fields
-    await dataStore.updateUser(userID, {
+    await store.updateUser(userID, {
       accessToken: undefined,
       refreshToken: undefined,
       teamId: undefined,
@@ -79,7 +98,8 @@ export const updateUserTokens = async (
   slackUserName?: string
 ): Promise<any> => {
   try {
-    return await dataStore.updateUser(userID, {
+    const store = getDataStore()
+    return await store.updateUser(userID, {
       accessToken,
       refreshToken,
       teamId,
@@ -91,8 +111,9 @@ export const updateUserTokens = async (
     // If user doesn't exist, create them first
     if (error instanceof Error && error.message.includes("not found")) {
       console.log(`User ${userID} not found, creating new user`)
-      await dataStore.createUser({ antiId: userID })
-      return await dataStore.updateUser(userID, {
+      const store = getDataStore()
+      await store.createUser({ antiId: userID })
+      return await store.updateUser(userID, {
         accessToken,
         refreshToken,
         teamId,
