@@ -82,6 +82,12 @@ export interface SlackDataStore {
    * Mark conversation as read up to specific timestamp
    */
   markConversationAsRead(userId: string, channelId: string, readTs: string): Promise<void>
+  
+  /**
+   * Update conversation read state from Events API (channel_marked, im_marked, etc.)
+   * Updates unread count based on read timestamp
+   */
+  updateConversationReadState(userId: string, channelId: string, readTs: string): Promise<void>
 
   // ===============================
   // Message & Thread Operations
@@ -213,6 +219,9 @@ export interface SlackDataStore {
     isArchived: boolean
     isMember: boolean
     memberCount: number
+    unreadCount?: number
+    unreadCountDisplay?: number
+    lastReadTs?: string
     lastMessageTs?: string
     lastMessagePreview?: string
   }>): Promise<void>

@@ -40,10 +40,10 @@ const eventHandlers: Record<string, EventHandler> = {
   'reaction_removed': handleReactionEvent,
   
   // Channel marked events (unread count tracking)
-  'channel_marked': handleChannelMarkedEvent,
-  'group_marked': handleChannelMarkedEvent,
-  'im_marked': handleChannelMarkedEvent,
-  'mpim_marked': handleChannelMarkedEvent,
+  'channel_marked': handleChannelMarkedEventWithDb,
+  'group_marked': handleChannelMarkedEventWithDb,
+  'im_marked': handleChannelMarkedEventWithDb,
+  'mpim_marked': handleChannelMarkedEventWithDb,
   
   // User events
   'presence_change': handleUserEvent,
@@ -241,33 +241,6 @@ async function handleReactionEvent(eventData: SlackEventData, userId: string): P
 }
 
 /**
- * Handle channel marked events (unread count tracking)
- */
-async function handleChannelMarkedEvent(eventData: SlackEventData, userId: string): Promise<void> {
-  const event = eventData.event as any // Channel marked events have similar structure
-  
-  logger.info('Processing channel marked event', {
-    eventType: eventData.eventType,
-    channel: event.channel,
-    ts: event.ts,
-    unreadCount: event.unread_count,
-    userId
-  })
-
-  // TODO: Update conversation read state in storage
-  if (storageContainer?.dataStore) {
-    try {
-      await storageContainer.dataStore.markConversationAsRead(userId, event.channel, event.ts)
-      logger.info('Conversation marked as read', { userId, channel: event.channel })
-    } catch (error) {
-      logger.error('Failed to mark conversation as read', error instanceof Error ? error : new Error(String(error)), { userId, channel: event.channel })
-    }
-  } else {
-    logger.warn('Storage not available for marking conversation as read')
-  }
-}
-
-/**
  * Handle channel lifecycle events
  */
 async function handleChannelEvent(eventData: SlackEventData, userId: string): Promise<void> {
@@ -323,6 +296,51 @@ async function handleTokensRevokedEvent(eventData: SlackEventData, userId: strin
   // TODO: Update token status in storage
   // This will be implemented when token management is ready
   logger.debug('Token revocation handling not yet implemented')
+}
+
+/**
+ * Handle channel marked events (unread count tracking) - WITH DATABASE UPDATE
+ * Implements proper read state tracking inline to avoid import issues
+ */
+async function handleChannelMarkedEventWithDb(eventData: SlackEventData, userId: string): Promise<void> {
+  const event = eventData.event as any
+  
+  logger.info('Processing read state event for unread count update', {
+    userId,
+    eventType: event.type,
+    channel: event.channel,
+    ts: event.ts
+  })
+
+  try {
+    if (!storageContainer?.dataStore) {
+      logger.error('DataStore not initialized in read state processor')
+      return
+    }
+
+    // The 'ts' field indicates the timestamp up to which messages are marked as read
+    const readTimestamp = event.ts as string
+    const channelId = event.channel as string
+
+    // Update the conversation's read state and unread count
+    await storageContainer.dataStore.updateConversationReadState(userId, channelId, readTimestamp)
+    
+    logger.info('Read state updated successfully', {
+      userId,
+      eventType: event.type,
+      channel: channelId,
+      readTimestamp
+    })
+    
+  } catch (error) {
+    logger.error('Failed to process read state event', error instanceof Error ? error : new Error(String(error)), {
+      userId,
+      eventType: event.type,
+      channel: event.channel,
+      ts: event.ts
+    })
+    throw error
+  }
 }
 
 /**

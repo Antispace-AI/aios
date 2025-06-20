@@ -179,8 +179,8 @@ async function handleBotMessage(event: SlackMessageEvent, userId: string): Promi
     text: event.text || '',
     messageType: 'message',
     subtype: event.subtype,
-    slackUserId: undefined, // Bot messages don't have a user ID
-    botId: event.bot_id,
+    slackUserId: undefined, // Bot messages don't have a user ID 
+    botId: event.bot_id || 'unknown_bot',
     hasFiles: event.files && event.files.length > 0,
     hasReactions: event.reactions && event.reactions.length > 0,
     hasReplies: false,
@@ -192,7 +192,8 @@ async function handleBotMessage(event: SlackMessageEvent, userId: string): Promi
     userId,
     channel: event.channel,
     messageTs: event.ts,
-    botId: event.bot_id
+    botId: event.bot_id,
+    username: botUsername
   })
 }
 

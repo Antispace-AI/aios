@@ -53,6 +53,40 @@ export class SlackSyncOrchestrator {
         logger.warn('Conversation pull had errors', { errors: convResult.errors })
       }
 
+      // Get user data and verify the internal ID exists in database
+      const userIdCheck = await this.dataStore.getUser(this.antiId)
+      if (!userIdCheck) {
+        throw new Error(`User not found in database: ${this.antiId}`)
+      }
+      
+      // Use the verified user ID from fresh database lookup
+      const verifiedUserId = userIdCheck.id
+
+      // Store conversation data with unread counts
+      if (convResult.conversations.length > 0) {
+        await this.dataStore.upsertBatchConversations(convResult.conversations.map(conv => ({
+          userId: verifiedUserId, // Use verified user ID instead of potentially stale one
+          slackChannelId: conv.id,
+          name: conv.name,
+          displayName: conv.displayName,
+          type: conv.type,
+          isPrivate: conv.isPrivate,
+          isArchived: conv.isArchived,
+          isMember: conv.isMember,
+          memberCount: conv.memberCount,
+          unreadCount: conv.unreadCount,
+          unreadCountDisplay: conv.unreadCountDisplay,
+          lastReadTs: conv.lastRead,
+          lastMessageTs: undefined, // Will be updated when messages are stored
+          lastMessagePreview: undefined // Will be updated when messages are stored
+        })))
+        
+        logger.info('Stored conversations with unread count data', { 
+          antiId: this.antiId, 
+          conversationsStored: convResult.conversations.length 
+        })
+      }
+
       // Step 2: Pull messages for each conversation with rate limiting
       logger.info('Step 2: Pulling messages for conversations', { 
         antiId: this.antiId,
@@ -78,6 +112,38 @@ export class SlackSyncOrchestrator {
               opts
             )
             totalMessages += result.messages.length
+            
+            // Store messages if any were found
+            if (result.messages.length > 0) {
+              for (const msg of result.messages) {
+                try {
+                  await this.dataStore.storeMessage({
+                    userId: verifiedUserId, // Use verified user ID instead of potentially stale one
+                    conversationId: '', // Will be looked up by storeMessage
+                    slackChannelId: msg.channelId,
+                    messageTs: msg.messageTs,
+                    threadTs: msg.threadTs,
+                    text: msg.text,
+                    messageType: 'message',
+                    subtype: undefined,
+                    slackUserId: msg.userId,
+                    slackUserName: undefined, // Will be filled in when user profiles are synced
+                    hasFiles: msg.files && msg.files.length > 0,
+                    hasReactions: msg.reactions && msg.reactions.length > 0,
+                    hasReplies: false,
+                    replyCount: 0,
+                    slackTimestamp: msg.messageTs
+                  })
+                } catch (msgError) {
+                  logger.warn('Failed to store message', { 
+                    antiId: this.antiId, 
+                    messageTs: msg.messageTs, 
+                    error: msgError instanceof Error ? msgError.message : String(msgError) 
+                  })
+                }
+              }
+            }
+            
             return result
           } catch (error) {
             const errorMsg = `Failed to pull messages for ${conv.id}: ${error instanceof Error ? error.message : error}`
@@ -99,25 +165,16 @@ export class SlackSyncOrchestrator {
       // Step 3: Extract and sync user profiles for message attribution
       logger.info('Step 3: Syncing user profiles', { antiId: this.antiId })
       const userIds = this.extractUniqueUserIds(messageResults)
-      const userResult = await this.pullEngine.pullUserProfiles(userIds, opts)
+      const userProfileResult = await this.pullEngine.pullUserProfiles(userIds, opts)
 
-      // Calculate sync result
-      const duration = Date.now() - startTime
-      const syncResult: SyncResult = {
-        success: true,
-        conversationsSync: convResult.conversations.length,
-        messagesSync: totalMessages,
-        usersSync: userResult.users.length,
-        timeWindow: `${opts.timeWindow} days`,
-        duration,
-        errors: [
-          ...convResult.errors,
-          ...messageErrors,
-          ...userResult.errors
-        ]
+      if (userProfileResult.errors.length > 0) {
+        logger.warn('User profile pull had errors', { errors: userProfileResult.errors })
       }
 
-      // Update sync state to completed
+      await this.dataStore.syncUserProfiles(userProfileResult.users)
+
+      // Update sync state
+      const duration = Date.now() - startTime
       await this.dataStore.updateSyncState({
         userId: user.id,
         syncStatus: 'completed',
@@ -128,10 +185,32 @@ export class SlackSyncOrchestrator {
 
       logger.info('Full sync completed successfully', {
         antiId: this.antiId,
-        ...syncResult
+        success: true,
+        conversationsSync: convResult.conversations.length,
+        messagesSync: totalMessages,
+        usersSync: userProfileResult.users.length,
+        timeWindow: `${opts.timeWindow} days`,
+        duration,
+        errors: [
+          ...convResult.errors,
+          ...messageErrors,
+          ...userProfileResult.errors
+        ]
       })
 
-      return syncResult
+      return {
+        success: true,
+        conversationsSync: convResult.conversations.length,
+        messagesSync: totalMessages,
+        usersSync: userProfileResult.users.length,
+        timeWindow: `${opts.timeWindow} days`,
+        duration,
+        errors: [
+          ...convResult.errors,
+          ...messageErrors,
+          ...userProfileResult.errors
+        ]
+      }
 
     } catch (error) {
       const duration = Date.now() - startTime

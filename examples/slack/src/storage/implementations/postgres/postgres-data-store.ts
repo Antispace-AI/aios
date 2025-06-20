@@ -370,6 +370,45 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
     }
   }
 
+  /**
+   * Update conversation read state from Events API (channel_marked, im_marked, etc.)
+   * Updates unread count based on read timestamp
+   */
+  async updateConversationReadState(userId: string, channelId: string, readTs: string): Promise<void> {
+    try {
+      // Update read timestamp and recalculate unread count
+      const result = await this.db.query(`
+        UPDATE conversations 
+        SET 
+          last_read_ts = $3,
+          unread_count = (
+            SELECT COUNT(*) 
+            FROM messages 
+            WHERE user_id = $1 
+              AND slack_channel_id = $2 
+              AND slack_timestamp > $3
+              AND is_deleted = FALSE
+          ),
+          updated_at = NOW()
+        WHERE user_id = $1 AND slack_channel_id = $2
+        RETURNING unread_count
+      `, [userId, channelId, readTs])
+      
+      const newUnreadCount = result.rows[0]?.unread_count || 0
+      
+      logger.info('Conversation read state updated from Events API', { 
+        userId, 
+        channelId, 
+        readTs, 
+        newUnreadCount 
+      })
+      
+    } catch (error) {
+      logger.error('Failed to update conversation read state', error instanceof Error ? error : new Error(String(error)))
+      throw error
+    }
+  }
+
   // ===============================
   // Message Operations
   // ===============================
@@ -495,7 +534,7 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
         message.text,
         message.messageType || 'message',
         message.subtype,
-        message.slackUserId,
+        message.slackUserId || null,
         message.botId,
         message.hasFiles || false,
         message.hasReactions || false,
@@ -955,6 +994,9 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
     isArchived: boolean
     isMember: boolean
     memberCount: number
+    unreadCount?: number
+    unreadCountDisplay?: number
+    lastReadTs?: string
     lastMessageTs?: string
     lastMessagePreview?: string
   }>): Promise<void> {
@@ -970,8 +1012,9 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
           INSERT INTO conversations (
             user_id, slack_channel_id, name, display_name, type,
             is_private, is_archived, is_member, member_count,
+            unread_count, unread_count_display, last_read_ts,
             last_message_ts, last_message_preview, last_activity_at
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW())
           ON CONFLICT (user_id, slack_channel_id) DO UPDATE SET
             name = EXCLUDED.name,
             display_name = EXCLUDED.display_name,
@@ -980,6 +1023,9 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
             is_archived = EXCLUDED.is_archived,
             is_member = EXCLUDED.is_member,
             member_count = EXCLUDED.member_count,
+            unread_count = EXCLUDED.unread_count,
+            unread_count_display = EXCLUDED.unread_count_display,
+            last_read_ts = EXCLUDED.last_read_ts,
             last_message_ts = COALESCE(EXCLUDED.last_message_ts, conversations.last_message_ts),
             last_message_preview = COALESCE(EXCLUDED.last_message_preview, conversations.last_message_preview),
             last_activity_at = GREATEST(conversations.last_activity_at, NOW()),
@@ -994,6 +1040,9 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
           conv.isArchived,
           conv.isMember,
           conv.memberCount,
+          conv.unreadCount || 0,
+          conv.unreadCountDisplay || conv.unreadCount || 0,
+          conv.lastReadTs,
           conv.lastMessageTs,
           conv.lastMessagePreview
         ])

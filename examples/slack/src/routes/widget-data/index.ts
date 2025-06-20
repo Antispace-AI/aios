@@ -41,19 +41,25 @@ export async function getWidgetData(antiId: string): Promise<WidgetData> {
       }
     }
 
-    const [unreadSummary, conversations, cacheStatus] = await Promise.all([
+    const [unreadSummary, allConversations, unreadConversations, cacheStatus] = await Promise.all([
       dataStore.getUnreadSummary(user.id),
       dataStore.getConversationList({ 
         userId: user.id, 
+        limit: 5,
+        unreadOnly: false // Get all conversations to check if cache exists
+      }),
+      dataStore.getConversationList({ 
+        userId: user.id, 
         limit: 10,
-        unreadOnly: true 
+        unreadOnly: true // Get unread conversations for display
       }),
       dataStore.isUserCacheActive(antiId)
     ])
     
     // Check if cache is empty and trigger background sync
+    // Use allConversations to check if any data exists at all
     let backgroundSyncTriggered = false
-    if (unreadSummary.totalUnread === 0 && conversations.length === 0) {
+    if (allConversations.length === 0) {
       logger.info('First widget access or empty cache - initiating background data sync', { antiId })
       
       // Trigger background sync without blocking the response
@@ -80,7 +86,7 @@ export async function getWidgetData(antiId: string): Promise<WidgetData> {
     
     return {
       totalUnread: unreadSummary.totalUnread,
-      conversations: conversations.map(conv => ({
+      conversations: unreadConversations.map(conv => ({
         id: conv.id,
         displayName: conv.displayName || `Channel ${conv.id}`,
         unreadCount: conv.unreadCount,

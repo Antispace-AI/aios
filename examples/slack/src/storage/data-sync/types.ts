@@ -30,9 +30,16 @@ export interface ConversationPullResult {
   conversations: Array<{
     id: string
     name: string
+    displayName: string
     type: string
     lastActivity: Date
     memberCount: number
+    unreadCount: number
+    unreadCountDisplay: number
+    lastRead?: string
+    isPrivate: boolean
+    isArchived: boolean
+    isMember: boolean
   }>
   totalCount: number
   activeCount: number // Conversations with activity in timeWindow

@@ -10,7 +10,15 @@ export interface StorageContainer {
   connection: PostgreSQLConnection
 }
 
+// Singleton pattern to avoid multiple container creation
+let _storageContainer: StorageContainer | null = null
+
 export function createStorageContainer(config?: DatabaseConfig): StorageContainer {
+  // Return existing container if available
+  if (_storageContainer) {
+    return _storageContainer
+  }
+
   // Use environment variables by default
   const dbConfig: DatabaseConfig = {
     host: config?.host || process.env.POSTGRES_HOST || 'localhost',
@@ -35,5 +43,11 @@ export function createStorageContainer(config?: DatabaseConfig): StorageContaine
   const connection = new PostgreSQLConnection(dbConfig)
   const dataStore = new PostgreSQLSlackDataStore(connection)
 
-  return { dataStore, connection }
+  _storageContainer = { dataStore, connection }
+  return _storageContainer
+}
+
+// Function to reset singleton (useful for testing)
+export function resetStorageContainer(): void {
+  _storageContainer = null
 } 

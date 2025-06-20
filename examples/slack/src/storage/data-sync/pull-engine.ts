@@ -29,11 +29,10 @@ export class SlackDataPullEngine {
   ) {}
 
   private async getAuthenticatedUser() {
-    if (!this.user) {
-      this.user = await getUser(this.antiId)
-      if (!this.user?.accessToken) {
-        throw new Error(`User ${this.antiId} is not authenticated with Slack`)
-      }
+    // Always refresh user data from database to prevent stale cache issues
+    this.user = await getUser(this.antiId)
+    if (!this.user?.accessToken) {
+      throw new Error(`User ${this.antiId} is not authenticated with Slack`)
     }
     return this.user
   }
@@ -69,6 +68,13 @@ export class SlackDataPullEngine {
         type: string
         lastActivity: Date
         memberCount: number
+        unreadCount: number
+        unreadCountDisplay: number
+        lastRead?: string
+        displayName: string
+        isPrivate: boolean
+        isArchived: boolean
+        isMember: boolean
       }> = []
       const errors: string[] = []
       let activeCount = 0
@@ -86,9 +92,16 @@ export class SlackDataPullEngine {
           conversations.push({
             id: conv.id,
             name: conv.name || 'Unknown',
+            displayName: conv.display_name || conv.name || 'Unknown',
             type: conv.type,
             lastActivity,
-            memberCount: conv.num_members || 0
+            memberCount: conv.num_members || 0,
+            unreadCount: conv.unread_count || 0,
+            unreadCountDisplay: conv.unread_count_display || conv.unread_count || 0,
+            lastRead: conv.last_read || undefined,
+            isPrivate: conv.is_private || false,
+            isArchived: conv.is_archived || false,
+            isMember: conv.is_member || false
           })
 
           // Rate limiting delay
@@ -107,6 +120,7 @@ export class SlackDataPullEngine {
         antiId: this.antiId,
         totalConversations: conversations.length,
         activeConversations: activeCount,
+        totalUnreadCount: conversations.reduce((sum, conv) => sum + conv.unreadCount, 0),
         errors: errors.length
       })
 
