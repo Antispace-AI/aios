@@ -59,13 +59,13 @@ export class SlackSyncOrchestrator {
         throw new Error(`User not found in database: ${this.antiId}`)
       }
       
-      // Use the verified user ID from fresh database lookup
+      // Use the UUID for all database operations (standardized approach)
       const verifiedUserId = userIdCheck.id
 
       // Store conversation data with unread counts
       if (convResult.conversations.length > 0) {
         await this.dataStore.upsertBatchConversations(convResult.conversations.map(conv => ({
-          userId: verifiedUserId, // Use verified user ID instead of potentially stale one
+          userId: verifiedUserId, // Use verified UUID consistently
           slackChannelId: conv.id,
           name: conv.name,
           displayName: conv.displayName,
@@ -118,7 +118,7 @@ export class SlackSyncOrchestrator {
               for (const msg of result.messages) {
                 try {
                   await this.dataStore.storeMessage({
-                    userId: verifiedUserId, // Use verified user ID instead of potentially stale one
+                    userId: verifiedUserId, // Use antiId for database operations
                     conversationId: '', // Will be looked up by storeMessage
                     slackChannelId: msg.channelId,
                     messageTs: msg.messageTs,
@@ -176,7 +176,7 @@ export class SlackSyncOrchestrator {
       // Update sync state
       const duration = Date.now() - startTime
       await this.dataStore.updateSyncState({
-        userId: user.id,
+        userId: userIdCheck.id,
         syncStatus: 'completed',
         messagesSynced: totalMessages,
         conversationsSynced: convResult.conversations.length,
@@ -255,7 +255,7 @@ export class SlackSyncOrchestrator {
     })
 
     try {
-      // Get last sync states to determine what to update
+      // Get last sync states to determine what to update  
       const syncStates = await this.dataStore.getAllSyncStates(user.id)
       
       if (syncStates.length === 0) {

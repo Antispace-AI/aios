@@ -87,6 +87,7 @@ export const clearUserTokens = async (userID: string): Promise<boolean> => {
 
 /**
  * Update user's Slack authentication tokens
+ * Now handles new users gracefully without error messages
  */
 export const updateUserTokens = async (
   userID: string, 
@@ -99,6 +100,17 @@ export const updateUserTokens = async (
 ): Promise<any> => {
   try {
     const store = getDataStore()
+    
+    // Check if user exists first to avoid error logging
+    const existingUser = await store.getUser(userID)
+    
+    if (!existingUser) {
+      // User doesn't exist, create them first
+      console.log(`User ${userID} not found, creating new user`)
+      await store.createUser({ antiId: userID })
+    }
+    
+    // Now update the user (whether existing or newly created)
     return await store.updateUser(userID, {
       accessToken,
       refreshToken,
@@ -107,21 +119,9 @@ export const updateUserTokens = async (
       slackUserId,
       slackUserName,
     })
+    
   } catch (error) {
-    // If user doesn't exist, create them first
-    if (error instanceof Error && error.message.includes("not found")) {
-      console.log(`User ${userID} not found, creating new user`)
-      const store = getDataStore()
-      await store.createUser({ antiId: userID })
-      return await store.updateUser(userID, {
-        accessToken,
-        refreshToken,
-        teamId,
-        teamName,
-        slackUserId,
-        slackUserName,
-      })
-    }
+    console.error(`Failed to update user tokens for ${userID}:`, error)
     throw error
   }
 } 

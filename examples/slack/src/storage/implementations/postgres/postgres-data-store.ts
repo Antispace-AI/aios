@@ -165,15 +165,15 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
   // ===============================
   // Conversation Management
   // ===============================
+  // NOTE: All methods now expect userUuid (users.id) instead of antiId for performance
 
-  async getConversation(userId: string, channelId: string): Promise<Conversation | null> {
+  async getConversation(userUuid: string, channelId: string): Promise<Conversation | null> {
     try {
       const result = await this.db.query(`
         SELECT c.*
         FROM conversations c
-        JOIN users u ON c.user_id = u.id
-        WHERE u.anti_id = $1 AND c.slack_channel_id = $2
-      `, [userId, channelId])
+        WHERE c.user_id = $1 AND c.slack_channel_id = $2
+      `, [userUuid, channelId])
 
       if (result.rows.length === 0) {
         return null
@@ -181,25 +181,14 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
 
       return this.mapRowToConversation(result.rows[0])
     } catch (error) {
-      logger.error('Failed to get conversation', error instanceof Error ? error : new Error(String(error)), { userId, channelId })
+      logger.error('Failed to get conversation', error instanceof Error ? error : new Error(String(error)), { userUuid, channelId })
       throw error
     }
   }
 
-  async upsertConversation(userId: string, channelId: string, data: CreateConversationInput): Promise<Conversation> {
+  async upsertConversation(userUuid: string, channelId: string, data: CreateConversationInput): Promise<Conversation> {
     try {
-      // First, get the user's UUID
-      const userResult = await this.db.query(
-        'SELECT id FROM users WHERE anti_id = $1',
-        [userId]
-      )
-
-      if (userResult.rows.length === 0) {
-        throw new Error(`User not found: ${userId}`)
-      }
-
-      const userUuid = userResult.rows[0].id
-
+      // userUuid is now the actual UUID, no lookup needed
       const result = await this.db.query(`
         INSERT INTO conversations (
           user_id, slack_channel_id, name, topic, purpose, display_name, type,
@@ -231,12 +220,12 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
 
       return this.mapRowToConversation(result.rows[0])
     } catch (error) {
-      logger.error('Failed to upsert conversation', error instanceof Error ? error : new Error(String(error)), { userId, channelId })
+      logger.error('Failed to upsert conversation', error instanceof Error ? error : new Error(String(error)), { userUuid, channelId })
       throw error
     }
   }
 
-  async updateConversation(userId: string, channelId: string, updates: UpdateConversationInput): Promise<Conversation> {
+  async updateConversation(userUuid: string, channelId: string, updates: UpdateConversationInput): Promise<Conversation> {
     throw new Error('updateConversation not implemented yet')
   }
 
@@ -254,14 +243,22 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
           c.unread_count_display,
           c.is_muted,
           c.last_activity_at,
-          c.last_message_preview,
-          c.last_message_user_id,
-          c.last_message_ts
+          -- Get actual latest message data from messages table
+          latest_msg.text as latest_message_text,
+          latest_msg.slack_timestamp as latest_message_timestamp,
+          latest_msg.slack_user_id as latest_message_user_id,
+          latest_msg.message_ts as latest_message_ts
         FROM conversations c
-        JOIN users u ON c.user_id = u.id
-        WHERE u.anti_id = $1
+        LEFT JOIN LATERAL (
+          SELECT text, slack_timestamp, slack_user_id, message_ts
+          FROM messages m 
+          WHERE m.conversation_id = c.id 
+          ORDER BY m.slack_timestamp DESC 
+          LIMIT 1
+        ) latest_msg ON true
+        WHERE c.user_id = $1
       `
-      const values = [query.userId]
+      const values = [query.userUuid] // Changed from userId to userUuid
       let paramIndex = 2
 
       // Add type filter
@@ -280,17 +277,17 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
         sql += ` AND c.is_archived = false`
       }
 
-      // Add sorting
+      // Add sorting - use actual message timestamp for better sorting
       const sortBy = query.sortBy || 'activity'
       switch (sortBy) {
         case 'alphabetical':
           sql += ` ORDER BY c.display_name ASC`
           break
         case 'unread':
-          sql += ` ORDER BY c.unread_count DESC, c.last_activity_at DESC NULLS LAST`
+          sql += ` ORDER BY c.unread_count DESC, latest_msg.slack_timestamp DESC NULLS LAST`
           break
         default: // 'activity'
-          sql += ` ORDER BY c.last_activity_at DESC NULLS LAST`
+          sql += ` ORDER BY latest_msg.slack_timestamp DESC NULLS LAST`
       }
 
       // Add limit
@@ -308,20 +305,20 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
         unreadCount: row.unread_count || 0,
         unreadCountDisplay: row.unread_count_display || row.unread_count || 0,
         isMuted: row.is_muted || false,
-        lastActivityAt: row.last_activity_at?.toISOString(),
-        lastMessagePreview: row.last_message_preview,
-        lastMessageUserId: row.last_message_user_id,
-        lastMessageTs: row.last_message_ts,
-        formattedTime: this.formatTime(row.last_activity_at),
+        lastActivityAt: row.latest_message_timestamp?.toISOString(),
+        lastMessagePreview: row.latest_message_text,
+        lastMessageUserId: row.latest_message_user_id,
+        lastMessageTs: row.latest_message_ts,
+        formattedTime: this.formatTime(row.latest_message_timestamp),
         hasUnread: (row.unread_count || 0) > 0
       }))
     } catch (error) {
-      logger.error('Failed to get conversation list', error instanceof Error ? error : new Error(String(error)), { userId: query.userId })
+      logger.error('Failed to get conversation list', error instanceof Error ? error : new Error(String(error)), { userUuid: query.userUuid })
       throw error
     }
   }
 
-  async getUnreadSummary(userId: string): Promise<UnreadSummary> {
+  async getUnreadSummary(userUuid: string): Promise<UnreadSummary> {
     try {
       const result = await this.db.query(`
         SELECT 
@@ -337,9 +334,8 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
             ) ORDER BY c.unread_count DESC
           ) FILTER (WHERE c.unread_count > 0) as unread_conversations
         FROM conversations c
-        JOIN users u ON c.user_id = u.id
-        WHERE u.anti_id = $1 AND c.unread_count > 0
-      `, [userId])
+        WHERE c.user_id = $1 AND c.unread_count > 0
+      `, [userUuid])
 
       const row = result.rows[0]
       return {
@@ -347,107 +343,89 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
         conversations: row.unread_conversations || []
       }
     } catch (error) {
-      logger.error('Failed to get unread summary', error instanceof Error ? error : new Error(String(error)), { userId })
+      logger.error('Failed to get unread summary', error instanceof Error ? error : new Error(String(error)), { userUuid })
       throw error
     }
   }
 
-  async markConversationAsRead(userId: string, channelId: string, readTs: string): Promise<void> {
+  async markConversationAsRead(userUuid: string, channelId: string, readTs: string): Promise<void> {
     try {
       await this.db.query(`
         UPDATE conversations 
         SET last_read_ts = $1, unread_count = 0, unread_count_display = 0, updated_at = NOW()
-        FROM users u
-        WHERE conversations.user_id = u.id 
-          AND u.anti_id = $2 
-          AND conversations.slack_channel_id = $3
-      `, [readTs, userId, channelId])
+        WHERE user_id = $2 AND slack_channel_id = $3
+      `, [readTs, userUuid, channelId])
 
-      logger.info('Conversation marked as read', { userId, channelId, readTs })
+      logger.info('Conversation marked as read', { userUuid, channelId, readTs })
     } catch (error) {
-      logger.error('Failed to mark conversation as read', error instanceof Error ? error : new Error(String(error)), { userId, channelId, readTs })
+      logger.error('Failed to mark conversation as read', error instanceof Error ? error : new Error(String(error)), { userUuid, channelId, readTs })
       throw error
     }
   }
 
-  /**
-   * Update conversation read state from Events API (channel_marked, im_marked, etc.)
-   * Updates unread count based on read timestamp
-   */
-  async updateConversationReadState(userId: string, channelId: string, readTs: string): Promise<void> {
+  async updateConversationReadState(userUuid: string, channelId: string, readTs: string): Promise<void> {
     try {
-      // Update read timestamp and recalculate unread count
-      const result = await this.db.query(`
+      await this.db.query(`
         UPDATE conversations 
         SET 
-          last_read_ts = $3,
-          unread_count = (
-            SELECT COUNT(*) 
-            FROM messages 
-            WHERE user_id = $1 
-              AND slack_channel_id = $2 
-              AND slack_timestamp > $3
-              AND is_deleted = FALSE
-          ),
+          last_read_ts = $1,
+          unread_count = GREATEST(0, unread_count - 1),
+          unread_count_display = GREATEST(0, unread_count_display - 1),
           updated_at = NOW()
-        WHERE user_id = $1 AND slack_channel_id = $2
-        RETURNING unread_count
-      `, [userId, channelId, readTs])
-      
-      const newUnreadCount = result.rows[0]?.unread_count || 0
-      
-      logger.info('Conversation read state updated from Events API', { 
-        userId, 
-        channelId, 
-        readTs, 
-        newUnreadCount 
-      })
-      
+        WHERE user_id = $2 AND slack_channel_id = $3
+      `, [readTs, userUuid, channelId])
+
+      logger.info('Conversation read state updated', { userUuid, channelId, readTs })
     } catch (error) {
-      logger.error('Failed to update conversation read state', error instanceof Error ? error : new Error(String(error)))
+      logger.error('Failed to update conversation read state', error instanceof Error ? error : new Error(String(error)), { userUuid, channelId, readTs })
       throw error
     }
   }
 
   // ===============================
-  // Message Operations
+  // Message Management  
   // ===============================
+  // NOTE: All methods now expect userUuid (users.id) instead of antiId for performance
 
   async storeMessage(message: CreateMessageInput): Promise<void> {
-    // First, ensure conversation exists
-    await this.upsertConversation(message.userId, message.slackChannelId, {
-      userId: message.userId,
-      slackChannelId: message.slackChannelId,
-      type: 'channel', // Default, will be updated with real data later
-      isPrivate: false
-    })
+    // First ensure conversation exists and is up-to-date with metadata
+    await this.enrichAndUpsertConversation(message.userId, message.slackChannelId)
     
-    // Get conversation ID
-    const convResult = await this.db.query(
-      'SELECT id FROM conversations WHERE user_id = $1 AND slack_channel_id = $2',
-      [message.userId, message.slackChannelId]
-    )
-    
-    if (convResult.rows.length === 0) {
-      throw new Error(`Conversation not found for channel ${message.slackChannelId}`)
-    }
-    
-    const conversationId = convResult.rows[0].id
-    
-    // Store the message
+    // Insert/update message - message.userId is now a UUID, use directly
     await this.db.query(`
       INSERT INTO messages (
-        user_id, conversation_id, slack_channel_id, message_ts, thread_ts,
-        text, message_type, subtype, slack_user_id, slack_user_name,
-        has_files, has_reactions, has_replies, reply_count, slack_timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        user_id, 
+        conversation_id, 
+        slack_channel_id, 
+        message_ts, 
+        thread_ts,
+        text, 
+        message_type, 
+        subtype, 
+        slack_user_id,
+        slack_user_name,
+        has_files, 
+        has_reactions, 
+        has_replies, 
+        reply_count, 
+        slack_timestamp
+      ) VALUES (
+        $1,
+        (SELECT id FROM conversations WHERE user_id = $1 AND slack_channel_id = $2),
+        $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+      )
       ON CONFLICT (user_id, slack_channel_id, message_ts) DO UPDATE SET
         text = EXCLUDED.text,
+        message_type = EXCLUDED.message_type,
+        slack_user_name = EXCLUDED.slack_user_name,
+        has_files = EXCLUDED.has_files,
+        has_reactions = EXCLUDED.has_reactions,
+        has_replies = EXCLUDED.has_replies,
+        reply_count = EXCLUDED.reply_count,
         is_edited = true,
         updated_at = NOW()
     `, [
-      message.userId,
-      conversationId,
+      message.userId, // Now a UUID
       message.slackChannelId,
       message.messageTs,
       message.threadTs,
@@ -463,19 +441,20 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
       this.parseSlackTimestamp(message.slackTimestamp)
     ])
     
-    // Update conversation last activity
+    // Update conversation last activity - message.userId is now a UUID
     await this.db.query(`
       UPDATE conversations 
       SET last_message_ts = $1, 
           last_message_preview = $2,
-          last_activity_at = NOW(),
+          last_activity_at = $5,
           updated_at = NOW()
       WHERE user_id = $3 AND slack_channel_id = $4
     `, [
       message.messageTs,
       message.text?.substring(0, 100) || '',
-      message.userId,
-      message.slackChannelId
+      message.userId, // Now a UUID
+      message.slackChannelId,
+      this.parseSlackTimestamp(message.slackTimestamp)
     ])
   }
 
@@ -489,13 +468,13 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
       // message.userId is now a UUID, use it directly
       await client.query(`
         INSERT INTO conversations (user_id, slack_channel_id, type, last_message_ts, last_activity_at)
-        VALUES ($1, $2, 'channel', $3, NOW())
+        VALUES ($1, $2, 'channel', $3, $4)
         ON CONFLICT (user_id, slack_channel_id) 
         DO UPDATE SET 
           last_message_ts = EXCLUDED.last_message_ts,
-          last_activity_at = NOW(),
+          last_activity_at = EXCLUDED.last_activity_at,
           updated_at = NOW()
-      `, [message.userId, message.slackChannelId, message.messageTs])
+      `, [message.userId, message.slackChannelId, message.messageTs, this.parseSlackTimestamp(message.slackTimestamp)])
       
       // Insert/update message
       // message.userId is now a UUID, use it directly
@@ -549,7 +528,7 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
    * Mark message as deleted in cache (for Events API)
    * OPTIMIZED: Single query update
    */
-  async markMessageDeleted(userId: string, channelId: string, messageTs: string): Promise<void> {
+  async markMessageDeleted(userUuid: string, channelId: string, messageTs: string): Promise<void> {
     await this.db.query(`
       UPDATE messages 
       SET is_deleted = true, 
@@ -558,28 +537,35 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
       WHERE user_id = $1 
         AND slack_channel_id = $2 
         AND message_ts = $3
-    `, [userId, channelId, messageTs])
+    `, [userUuid, channelId, messageTs])
   }
 
   /**
    * Enrich conversation with real Slack data before storing
    */
-  private async enrichAndUpsertConversation(userId: string, channelId: string): Promise<void> {
+  private async enrichAndUpsertConversation(userUuid: string, channelId: string): Promise<void> {
     try {
       // Check if conversation already exists and is enriched
-      const existing = await this.getConversation(userId, channelId)
+      const existing = await this.getConversation(userUuid, channelId)
       if (existing && existing.name) {
         // Already enriched, no need to fetch again
         return
       }
 
+      // Need to get antiId from userUuid to fetch user data
+      const userResult = await this.db.query('SELECT anti_id FROM users WHERE id = $1', [userUuid])
+      if (userResult.rows.length === 0) {
+        throw new Error(`User not found for UUID: ${userUuid}`)
+      }
+      const antiId = userResult.rows[0].anti_id
+
       // Get user to fetch Slack token
-      const user = await getUser(userId)
+      const user = await getUser(antiId)
       if (!user || !user.accessToken) {
-        logger.warn('No user or token found for conversation enrichment', { userId, channelId })
+        logger.warn('No user or token found for conversation enrichment', { userUuid, channelId })
         // Fall back to minimal conversation
-        await this.upsertConversation(userId, channelId, {
-          userId,
+        await this.upsertConversation(userUuid, channelId, {
+          userId: userUuid,
           slackChannelId: channelId,
           type: this.guessConversationType(channelId),
           isPrivate: false
@@ -588,7 +574,7 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
       }
 
       // Fetch real conversation data from Slack
-      logger.info('Enriching conversation with Slack data', { userId, channelId })
+      logger.info('Enriching conversation with Slack data', { userUuid, channelId })
       const response = await getConversationDetails(user, channelId)
       
       if (!response.success) {
@@ -599,7 +585,7 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
 
       // Map Slack data to our conversation format
       const conversationData = {
-        userId,
+        userId: userUuid,
         slackChannelId: channelId,
         name: slackConversation.name,
         displayName: this.formatDisplayName(slackConversation),
@@ -612,21 +598,21 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
         memberCount: 0 // Not available in current response
       }
 
-      await this.upsertConversation(userId, channelId, conversationData)
+      await this.upsertConversation(userUuid, channelId, conversationData)
 
       logger.info('Conversation enriched successfully', { 
-        userId, 
+        userUuid, 
         channelId, 
         name: conversationData.name,
         type: conversationData.type
       })
 
     } catch (error) {
-      logger.error('Failed to enrich conversation, using fallback', error instanceof Error ? error : new Error(String(error)), { userId, channelId })
+      logger.error('Failed to enrich conversation, using fallback', error instanceof Error ? error : new Error(String(error)), { userUuid, channelId })
       
       // Fall back to minimal conversation
-      await this.upsertConversation(userId, channelId, {
-        userId,
+      await this.upsertConversation(userUuid, channelId, {
+        userId: userUuid,
         slackChannelId: channelId,
         type: this.guessConversationType(channelId),
         isPrivate: false
@@ -813,179 +799,167 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
     if (!timestamp) return ''
 
     const now = new Date()
-    const diff = now.getTime() - timestamp.getTime()
+    const messageTime = new Date(timestamp)
+    const diff = now.getTime() - messageTime.getTime()
     const hours = diff / (1000 * 60 * 60)
+    const days = hours / 24
 
-    if (hours < 24) {
-      return timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    } else {
-      return timestamp.toLocaleDateString()
+    // Same day - show time only
+    if (hours < 24 && now.toDateString() === messageTime.toDateString()) {
+      return messageTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    } 
+    // Within a week - show day and time
+    else if (days < 7) {
+      return messageTime.toLocaleDateString([], { 
+        weekday: 'short', 
+        hour: '2-digit', 
+        minute: '2-digit' 
+      })
+    }
+    // Older - show date and time
+    else {
+      return messageTime.toLocaleDateString([], { 
+        month: 'short', 
+        day: 'numeric',
+        hour: '2-digit', 
+        minute: '2-digit' 
+      })
     }
   }
 
   // ===============================
   // Message Reactions
   // ===============================
+  // NOTE: All methods now expect userUuid (users.id) instead of antiId for performance
 
-  async addMessageReaction(userId: string, channelId: string, messageTs: string, reaction: Omit<MessageReaction, 'id' | 'userId' | 'messageId' | 'createdAt' | 'updatedAt'>): Promise<void> {
-    logger.info('Adding message reaction', { userId, channelId, messageTs, reaction: reaction.emojiName })
-    
-    const client = await this.db.query('BEGIN')
-    
+  async addMessageReaction(userUuid: string, channelId: string, messageTs: string, reaction: Omit<MessageReaction, 'id' | 'userId' | 'messageId' | 'createdAt' | 'updatedAt'>): Promise<void> {
     try {
-      // Get message ID
-      const messageResult = await this.db.query(`
-        SELECT id FROM messages 
-        WHERE user_id = $1 AND slack_channel_id = $2 AND message_ts = $3
-      `, [userId, channelId, messageTs])
-      
-      if (messageResult.rows.length === 0) {
-        logger.warn('Message not found for reaction', { userId, channelId, messageTs })
-        return
-      }
-      
-      const messageId = messageResult.rows[0].id
-      
-      // Upsert reaction (update count if exists, insert if not)
       await this.db.query(`
-        INSERT INTO message_reactions (user_id, message_id, emoji_name, count, user_reacted)
-        VALUES ($1, $2, $3, $4, $5)
-        ON CONFLICT (user_id, message_id, emoji_name) 
-        DO UPDATE SET 
+        INSERT INTO message_reactions (
+          user_id, 
+          message_id, 
+          emoji_name, 
+          count, 
+          users_reacted, 
+          user_reacted
+        ) VALUES (
+          $1,
+          (SELECT id FROM messages WHERE user_id = $1 AND slack_channel_id = $2 AND message_ts = $3),
+          $4, $5, $6, $7
+        )
+        ON CONFLICT (user_id, message_id, emoji_name) DO UPDATE SET
           count = EXCLUDED.count,
+          users_reacted = EXCLUDED.users_reacted,
           user_reacted = EXCLUDED.user_reacted,
           updated_at = NOW()
-      `, [userId, messageId, reaction.emojiName, reaction.count, reaction.userReacted])
-      
-      await this.db.query('COMMIT')
-      logger.info('Message reaction added successfully', { userId, channelId, messageTs, reaction: reaction.emojiName })
-      
+      `, [
+        userUuid,
+        channelId,
+        messageTs,
+        reaction.emojiName,
+        reaction.count,
+        JSON.stringify(reaction.usersReacted),
+        reaction.userReacted
+      ])
+
+      logger.info('Message reaction added', { userUuid, channelId, messageTs, emojiName: reaction.emojiName })
     } catch (error) {
-      await this.db.query('ROLLBACK')
-      logger.error('Failed to add message reaction', error instanceof Error ? error : new Error(String(error)), { userId, channelId, messageTs })
+      logger.error('Failed to add message reaction', error instanceof Error ? error : new Error(String(error)), { userUuid, channelId, messageTs })
       throw error
     }
   }
 
-  async removeMessageReaction(userId: string, channelId: string, messageTs: string, emojiName: string): Promise<void> {
-    logger.info('Removing message reaction', { userId, channelId, messageTs, emojiName })
-    
+  async removeMessageReaction(userUuid: string, channelId: string, messageTs: string, emojiName: string): Promise<void> {
     try {
-      // Get message ID
-      const messageResult = await this.db.query(`
-        SELECT id FROM messages 
-        WHERE user_id = $1 AND slack_channel_id = $2 AND message_ts = $3
-      `, [userId, channelId, messageTs])
-      
-      if (messageResult.rows.length === 0) {
-        logger.warn('Message not found for reaction removal', { userId, channelId, messageTs })
-        return
-      }
-      
-      const messageId = messageResult.rows[0].id
-      
-      // Remove reaction
       await this.db.query(`
         DELETE FROM message_reactions 
-        WHERE user_id = $1 AND message_id = $2 AND emoji_name = $3
-      `, [userId, messageId, emojiName])
-      
-      logger.info('Message reaction removed successfully', { userId, channelId, messageTs, emojiName })
-      
+        WHERE user_id = $1 
+          AND message_id = (
+            SELECT id FROM messages 
+            WHERE user_id = $1 AND slack_channel_id = $2 AND message_ts = $3
+          )
+          AND emoji_name = $4
+      `, [userUuid, channelId, messageTs, emojiName])
+
+      logger.info('Message reaction removed', { userUuid, channelId, messageTs, emojiName })
     } catch (error) {
-      logger.error('Failed to remove message reaction', error instanceof Error ? error : new Error(String(error)), { userId, channelId, messageTs })
+      logger.error('Failed to remove message reaction', error instanceof Error ? error : new Error(String(error)), { userUuid, channelId, messageTs })
       throw error
     }
   }
 
   // ===============================
-  // Data Synchronization Methods (Week 5)
+  // Batch Operations for Performance
   // ===============================
+  // NOTE: All batch methods now expect UUIDs consistently
 
-  /**
-   * Store multiple messages in batch for efficient sync
-   */
   async storeBatchMessages(messages: CreateMessageInput[]): Promise<void> {
     if (messages.length === 0) return
 
-    logger.info('Storing batch messages', { messageCount: messages.length })
-
-    const client = await this.db.query('BEGIN')
-    
     try {
-      // Prepare batch insert with conflict resolution
-      const values: string[] = []
-      const params: any[] = []
-      let paramIndex = 1
-
-      for (const msg of messages) {
-        // Get or create conversation
-        await this.enrichAndUpsertConversation(msg.userId, msg.slackChannelId)
-        
-        // Get conversation ID
-        const convResult = await this.db.query(
-          'SELECT id FROM conversations WHERE user_id = $1 AND slack_channel_id = $2',
-          [msg.userId, msg.slackChannelId]
-        )
-        
-        if (convResult.rows.length === 0) {
-          logger.warn('Failed to find conversation for batch message', { userId: msg.userId, channelId: msg.slackChannelId })
-          continue
+      await this.db.transaction(async (client) => {
+        for (const message of messages) {
+          // message.userId is now a UUID, use directly
+          await client.query(`
+            INSERT INTO messages (
+              user_id, 
+              conversation_id, 
+              slack_channel_id, 
+              message_ts, 
+              thread_ts,
+              text, 
+              message_type, 
+              subtype, 
+              slack_user_id,
+              slack_user_name,
+              has_files, 
+              has_reactions, 
+              has_replies, 
+              reply_count, 
+              slack_timestamp
+            ) VALUES (
+              $1,
+              (SELECT id FROM conversations WHERE user_id = $1 AND slack_channel_id = $2),
+              $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+            )
+            ON CONFLICT (user_id, slack_channel_id, message_ts) DO UPDATE SET
+              text = EXCLUDED.text,
+              message_type = EXCLUDED.message_type,
+              slack_user_name = EXCLUDED.slack_user_name,
+              has_files = EXCLUDED.has_files,
+              has_reactions = EXCLUDED.has_reactions,
+              has_replies = EXCLUDED.has_replies,
+              reply_count = EXCLUDED.reply_count,
+              is_edited = true,
+              updated_at = NOW()
+          `, [
+            message.userId, // Now a UUID
+            message.slackChannelId,
+            message.messageTs,
+            message.threadTs,
+            message.text,
+            message.messageType || 'message',
+            message.subtype,
+            message.slackUserId,
+            message.slackUserName,
+            message.hasFiles || false,
+            message.hasReactions || false,
+            message.hasReplies || false,
+            message.replyCount || 0,
+            this.parseSlackTimestamp(message.slackTimestamp)
+          ])
         }
-        
-        const conversationId = convResult.rows[0].id
-        
-        values.push(`($${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++})`)
-        
-        params.push(
-          msg.userId,
-          conversationId,
-          msg.slackChannelId,
-          msg.messageTs,
-          msg.threadTs || null,
-          msg.text || '',
-          msg.messageType || 'message',
-          msg.subtype || null,
-          msg.slackUserId || null,
-          msg.slackUserName || null,
-          msg.hasFiles || false,
-          msg.hasReactions || false,
-          msg.hasReplies || false,
-          msg.slackTimestamp ? this.parseSlackTimestamp(msg.slackTimestamp) : new Date()
-        )
-      }
+      })
 
-      if (values.length > 0) {
-        const query = `
-          INSERT INTO messages (
-            user_id, conversation_id, slack_channel_id, message_ts, thread_ts,
-            text, message_type, subtype, slack_user_id, slack_user_name,
-            has_files, has_reactions, has_replies, slack_timestamp
-          ) VALUES ${values.join(', ')}
-          ON CONFLICT (user_id, slack_channel_id, message_ts) DO UPDATE SET
-            text = EXCLUDED.text,
-            is_edited = true,
-            updated_at = NOW()
-        `
-        
-        await this.db.query(query, params)
-      }
-
-      await this.db.query('COMMIT')
-      logger.info('Batch messages stored successfully', { messageCount: messages.length })
-      
+      logger.info('Batch messages stored successfully', { count: messages.length })
     } catch (error) {
-      await this.db.query('ROLLBACK')
-      logger.error('Failed to store batch messages', error instanceof Error ? error : new Error(String(error)))
+      logger.error('Failed to store batch messages', error instanceof Error ? error : new Error(String(error)), { count: messages.length })
       throw error
     }
   }
 
-  /**
-   * Store multiple conversations in batch for efficient sync
-   */
   async upsertBatchConversations(conversations: Array<{
-    userId: string
+    userId: string // This is now a UUID
     slackChannelId: string
     name: string
     displayName: string
@@ -1002,65 +976,62 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
   }>): Promise<void> {
     if (conversations.length === 0) return
 
-    logger.info('Upserting batch conversations', { conversationCount: conversations.length })
-
-    const client = await this.db.query('BEGIN')
-    
     try {
-      for (const conv of conversations) {
-        await this.db.query(`
-          INSERT INTO conversations (
-            user_id, slack_channel_id, name, display_name, type,
-            is_private, is_archived, is_member, member_count,
-            unread_count, unread_count_display, last_read_ts,
-            last_message_ts, last_message_preview, last_activity_at
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW())
-          ON CONFLICT (user_id, slack_channel_id) DO UPDATE SET
-            name = EXCLUDED.name,
-            display_name = EXCLUDED.display_name,
-            type = EXCLUDED.type,
-            is_private = EXCLUDED.is_private,
-            is_archived = EXCLUDED.is_archived,
-            is_member = EXCLUDED.is_member,
-            member_count = EXCLUDED.member_count,
-            unread_count = EXCLUDED.unread_count,
-            unread_count_display = EXCLUDED.unread_count_display,
-            last_read_ts = EXCLUDED.last_read_ts,
-            last_message_ts = COALESCE(EXCLUDED.last_message_ts, conversations.last_message_ts),
-            last_message_preview = COALESCE(EXCLUDED.last_message_preview, conversations.last_message_preview),
-            last_activity_at = GREATEST(conversations.last_activity_at, NOW()),
-            updated_at = NOW()
-        `, [
-          conv.userId,
-          conv.slackChannelId,
-          conv.name,
-          conv.displayName,
-          conv.type,
-          conv.isPrivate,
-          conv.isArchived,
-          conv.isMember,
-          conv.memberCount,
-          conv.unreadCount || 0,
-          conv.unreadCountDisplay || conv.unreadCount || 0,
-          conv.lastReadTs,
-          conv.lastMessageTs,
-          conv.lastMessagePreview
-        ])
-      }
+      await this.db.transaction(async (client) => {
+        for (const conv of conversations) {
+          // conv.userId is now a UUID, use directly
+          await client.query(`
+            INSERT INTO conversations (
+              user_id, slack_channel_id, name, display_name, type,
+              is_private, is_archived, is_member, member_count,
+              unread_count, unread_count_display, last_read_ts,
+              last_message_ts, last_message_preview
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            ON CONFLICT (user_id, slack_channel_id) DO UPDATE SET
+              name = EXCLUDED.name,
+              display_name = EXCLUDED.display_name,
+              type = EXCLUDED.type,
+              is_private = EXCLUDED.is_private,
+              is_archived = EXCLUDED.is_archived,
+              is_member = EXCLUDED.is_member,
+              member_count = EXCLUDED.member_count,
+              unread_count = EXCLUDED.unread_count,
+              unread_count_display = EXCLUDED.unread_count_display,
+              last_read_ts = EXCLUDED.last_read_ts,
+              last_message_ts = EXCLUDED.last_message_ts,
+              last_message_preview = EXCLUDED.last_message_preview,
+              updated_at = NOW()
+          `, [
+            conv.userId, // Now a UUID
+            conv.slackChannelId,
+            conv.name,
+            conv.displayName,
+            conv.type,
+            conv.isPrivate,
+            conv.isArchived,
+            conv.isMember,
+            conv.memberCount,
+            conv.unreadCount || 0,
+            conv.unreadCountDisplay || 0,
+            conv.lastReadTs,
+            conv.lastMessageTs,
+            conv.lastMessagePreview
+          ])
+        }
+      })
 
-      await this.db.query('COMMIT')
-      logger.info('Batch conversations upserted successfully', { conversationCount: conversations.length })
-      
+      logger.info('Batch conversations upserted successfully', { count: conversations.length })
     } catch (error) {
-      await this.db.query('ROLLBACK')
-      logger.error('Failed to upsert batch conversations', error instanceof Error ? error : new Error(String(error)))
+      logger.error('Failed to upsert batch conversations', error instanceof Error ? error : new Error(String(error)), { count: conversations.length })
       throw error
     }
   }
 
-  /**
-   * Sync user profiles for message attribution
-   */
+  // ===============================
+  // Sync State Management
+  // ===============================
+  // NOTE: Sync state methods expect UUIDs for consistency
+
   async syncUserProfiles(profiles: Array<{
     slackUserId: string
     realName: string
@@ -1091,10 +1062,7 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
     }
   }
 
-  /**
-   * Get sync state for user/conversation
-   */
-  async getSyncState(userId: string, conversationId?: string): Promise<{
+  async getSyncState(userUuid: string, conversationId?: string): Promise<{
     lastSyncTs: Date
     syncStatus: 'pending' | 'in_progress' | 'completed' | 'failed'
     lastMessageTs?: string
@@ -1108,7 +1076,7 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
         WHERE user_id = $1 AND ($2::text IS NULL OR conversation_id = $2)
         ORDER BY last_sync_ts DESC
         LIMIT 1
-      `, [userId, conversationId])
+      `, [userUuid, conversationId])
 
       if (result.rows.length === 0) {
         return null
@@ -1129,11 +1097,8 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
     }
   }
 
-  /**
-   * Update sync state tracking
-   */
   async updateSyncState(state: {
-    userId: string
+    userId: string // This is now a UUID
     conversationId?: string
     syncStatus: 'pending' | 'in_progress' | 'completed' | 'failed'
     messagesSynced?: number
@@ -1156,7 +1121,7 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
           error_message = EXCLUDED.error_message,
           updated_at = NOW()
       `, [
-        state.userId,
+        state.userId, // Now a UUID
         state.conversationId,
         state.syncStatus,
         state.messagesSynced || 0,
@@ -1171,10 +1136,7 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
     }
   }
 
-  /**
-   * Get all sync states for a user
-   */
-  async getAllSyncStates(userId: string): Promise<Array<{
+  async getAllSyncStates(userUuid: string): Promise<Array<{
     conversationId?: string
     lastSyncTs: Date
     syncStatus: string
@@ -1187,7 +1149,7 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
         FROM sync_state 
         WHERE user_id = $1
         ORDER BY last_sync_ts DESC
-      `, [userId])
+      `, [userUuid])
 
       return result.rows.map(row => ({
         conversationId: row.conversation_id,
@@ -1204,7 +1166,7 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
   }
 
   // ===============================
-  // Not Yet Implemented (TODO)
+  // Placeholder methods (not implemented)
   // ===============================
 
   async updateMessage(): Promise<void> { throw new Error('Not implemented') }

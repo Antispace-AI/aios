@@ -41,17 +41,17 @@ export async function getWidgetData(antiId: string): Promise<WidgetData> {
       }
     }
 
-    const [unreadSummary, allConversations, unreadConversations, cacheStatus] = await Promise.all([
+    const [unreadSummary, allConversations, recentConversations, cacheStatus] = await Promise.all([
       dataStore.getUnreadSummary(user.id),
       dataStore.getConversationList({ 
-        userId: user.id, 
+        userUuid: user.id,
         limit: 5,
         unreadOnly: false // Get all conversations to check if cache exists
       }),
       dataStore.getConversationList({ 
-        userId: user.id, 
+        userUuid: user.id,
         limit: 10,
-        unreadOnly: true // Get unread conversations for display
+        unreadOnly: false // Show recent conversations instead of only unread
       }),
       dataStore.isUserCacheActive(antiId)
     ])
@@ -86,7 +86,7 @@ export async function getWidgetData(antiId: string): Promise<WidgetData> {
     
     return {
       totalUnread: unreadSummary.totalUnread,
-      conversations: unreadConversations.map(conv => ({
+      conversations: recentConversations.map(conv => ({
         id: conv.id,
         displayName: conv.displayName || `Channel ${conv.id}`,
         unreadCount: conv.unreadCount,
@@ -137,7 +137,7 @@ export async function getConversationsForWidget(antiId: string, limit: number = 
     }
 
     const conversations = await dataStore.getConversationList({ 
-      userId: user.id, 
+      userUuid: user.id,
       limit,
       // Don't filter by unread - show all conversations
     })

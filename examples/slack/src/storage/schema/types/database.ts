@@ -303,7 +303,7 @@ export interface GetMessagesQuery {
 }
 
 export interface GetConversationsQuery {
-  userId: string
+  userUuid: string // Changed from userId to userUuid for UUID consistency
   types?: ('channel' | 'im' | 'mpim' | 'group')[]
   unreadOnly?: boolean
   limit?: number
