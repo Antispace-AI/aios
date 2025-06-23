@@ -14,14 +14,12 @@ import { DEFAULT_PULL_OPTIONS } from './types'
 import { getUser } from '../../util'
 
 export class SlackSyncOrchestrator {
-  private pullEngine: SlackDataPullEngine
 
   constructor(
     private dataStore: SlackDataStore,
+    private pullEngine: SlackDataPullEngine,
     private antiId: string
-  ) {
-    this.pullEngine = new SlackDataPullEngine(dataStore, antiId)
-  }
+  ) {}
 
   /**
    * Perform full 7-day data synchronization

@@ -56,16 +56,25 @@ export async function listConversations(
       
       // Process conversations and get user info for DMs
       for (const channel of result.channels || []) {
-        // Determine conversation type
+        // Determine conversation type - prioritize is_im for DM detection
         let type: 'channel' | 'group' | 'im' | 'mpim'
-        if (channel.is_channel) {
-          type = 'channel'
-        } else if (channel.is_group) {
-          type = 'group'
+        if (channel.is_im) {
+          type = 'im'
         } else if (channel.is_mpim) {
           type = 'mpim'
+        } else if (channel.is_group) {
+          type = 'group'
+        } else if (channel.is_channel) {
+          type = 'channel'
         } else {
-          type = 'im'
+          // Fallback: guess based on channel ID prefix
+          if (channel.id?.startsWith('D')) {
+            type = 'im'
+          } else if (channel.id?.startsWith('G')) {
+            type = 'group'
+          } else {
+            type = 'channel'
+          }
         }
 
         // Create display name for the conversation

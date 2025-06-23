@@ -1,7 +1,7 @@
 import { getUser } from '../../util'
 import { createStorageContainer } from '../../storage/implementations/postgres/container'
 import { logger } from '../../util/logger'
-import { SlackSyncOrchestrator } from '../../storage/data-sync'
+import { SlackSyncOrchestrator, SlackDataPullEngine } from '../../storage/data-sync'
 
 /**
  * Widget Data Endpoint for Week 4
@@ -16,6 +16,8 @@ interface WidgetData {
     unreadCount: number
     lastMessage?: string
     lastActivity?: string
+    slackChannelId: string
+    hasUnread: boolean
   }>
   isActive: boolean
   lastRefresh?: string
@@ -65,7 +67,8 @@ export async function getWidgetData(antiId: string): Promise<WidgetData> {
       // Trigger background sync without blocking the response
       setImmediate(async () => {
         try {
-          const orchestrator = new SlackSyncOrchestrator(dataStore, antiId)
+          const pullEngine = new SlackDataPullEngine(dataStore, antiId)
+          const orchestrator = new SlackSyncOrchestrator(dataStore, pullEngine, antiId)
           const syncResult = await orchestrator.fullSync()
           logger.info('Background sync completed for widget access', {
             antiId,
@@ -91,7 +94,9 @@ export async function getWidgetData(antiId: string): Promise<WidgetData> {
         displayName: conv.displayName || `Channel ${conv.id}`,
         unreadCount: conv.unreadCount,
         lastMessage: conv.lastMessagePreview,
-        lastActivity: conv.formattedTime
+        lastActivity: conv.formattedTime,
+        slackChannelId: conv.slackChannelId,
+        hasUnread: conv.hasUnread
       })),
       isActive: cacheStatus,
       lastRefresh: user.updatedAt,

@@ -2,7 +2,7 @@ import { getUser } from '../../util'
 import { createStorageContainer } from '../../storage/implementations/postgres/container'
 import { logger } from '../../util/logger'
 import { getCleanupStatus, startCleanupScheduler, isCleanupSchedulerRunning } from '../../storage/cleanup-scheduler'
-import { SlackSyncOrchestrator } from '../../storage/data-sync'
+import { SlackSyncOrchestrator, SlackDataPullEngine } from '../../storage/data-sync'
 
 /**
  * Cache Management Endpoints for Week 4
@@ -64,10 +64,13 @@ export async function refreshUserCache(antiId: string, options: { incremental?: 
     }
 
     // Create sync orchestrator for this user
-    const orchestrator = new SlackSyncOrchestrator(dataStore, antiId)
+    const pullEngine = new SlackDataPullEngine(dataStore, antiId)
+    const orchestrator = new SlackSyncOrchestrator(dataStore, pullEngine, antiId)
     
     // Determine sync type based on cache state and options
-    const shouldPerformFullSync = options.incremental ? false : await orchestrator.shouldPerformFullSync()
+    const shouldPerformFullSync = options.incremental === false ? true : 
+                                 options.incremental === true ? false : 
+                                 await orchestrator.shouldPerformFullSync()
     
     // Perform the appropriate sync
     const syncResult = shouldPerformFullSync 
@@ -187,13 +190,13 @@ export default async function handler(c: any): Promise<any> {
     if (method === 'POST' && action === 'refresh') {
       // POST /cache?action=refresh - Refresh user cache
       const body = await c.req.json()
-      const { antiId } = body
+      const { antiId, incremental } = body
       
       if (!antiId) {
         return c.json({ error: 'antiId required in request body' }, 400)
       }
       
-      const result = await refreshUserCache(antiId)
+      const result = await refreshUserCache(antiId, { incremental })
       return c.json(result, result.success ? 200 : 400)
     }
     

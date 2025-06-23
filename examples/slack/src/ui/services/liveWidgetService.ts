@@ -1,5 +1,7 @@
 import { getWidgetData, getConversationsForWidget } from '../../routes/widget-data/index.js'
 import { logger } from '../../util/logger'
+import { getUser } from '../../util/index.js'
+import { handleSlackActions } from '../../ai/handlers/slack.js'
 
 /**
  * Live Widget Data Interface - Optimized for automatic refresh
@@ -55,7 +57,7 @@ export async function fetchLiveWidgetData(userId: string): Promise<LiveWidgetDat
         lastActivity: conv.lastActivity,
         hasUnread: conv.unreadCount > 0,
         isNew: false, // TODO: Implement new message detection
-        slackChannelId: conv.id // Use id as channelId for now
+        slackChannelId: conv.slackChannelId // Use the actual Slack channel ID
       })),
       lastUpdate: new Date().toISOString(),
       error: widgetData.error,
@@ -108,13 +110,26 @@ export async function checkSyncStatus(userId: string): Promise<SyncStatus> {
  */
 export async function handleQuickAction(action: string, values: any, userId: string): Promise<void> {
   try {
-    switch (action) {
+    // Parse action format: "action_name:channel_id"
+    const [actionName, channelId] = action.split(':')
+    
+    switch (actionName) {
       case 'mark_as_read':
-        await markConversationAsRead(userId, values.channelId)
+        if (channelId) {
+          await markConversationAsRead(userId, channelId)
+        }
         break
         
-      case 'mute_conversation':
-        await muteConversation(userId, values.channelId)
+      case 'toggle_mute':
+        if (channelId) {
+          await toggleMuteConversation(userId, channelId)
+        }
+        break
+        
+      case 'open_in_slack':
+        if (channelId) {
+          await openInSlack(userId, channelId)
+        }
         break
         
       case 'refresh_cache':
@@ -139,9 +154,13 @@ export async function handleQuickAction(action: string, values: any, userId: str
  */
 async function markConversationAsRead(userId: string, channelId: string): Promise<void> {
   try {
-    // TODO: Implement via AI function call
-    // For now, log the action
-    logger.info('Mark as read action', { userId, channelId })
+    const user = await getUser(userId)
+    if (!user) {
+      throw new Error('User not found')
+    }
+    
+    await handleSlackActions('markConversationAsRead', { conversationIdentifier: channelId }, user)
+    logger.info('Mark as read action completed', { userId, channelId })
   } catch (error) {
     logger.error('Failed to mark conversation as read', error instanceof Error ? error : new Error(String(error)), { userId, channelId })
     throw error
@@ -149,7 +168,34 @@ async function markConversationAsRead(userId: string, channelId: string): Promis
 }
 
 /**
- * Mute conversation via AI function
+ * Toggle mute/unmute conversation
+ */
+async function toggleMuteConversation(userId: string, channelId: string): Promise<void> {
+  try {
+    // TODO: Implement mute/unmute functionality when available in Slack API
+    logger.info('Toggle mute action (not yet implemented)', { userId, channelId })
+  } catch (error) {
+    logger.error('Failed to toggle mute conversation', error instanceof Error ? error : new Error(String(error)), { userId, channelId })
+    throw error
+  }
+}
+
+/**
+ * Open conversation in Slack app
+ */
+async function openInSlack(userId: string, channelId: string): Promise<void> {
+  try {
+    // TODO: This would typically open a deep link or redirect to Slack
+    // For now, just log the action
+    logger.info('Open in Slack action (not yet implemented)', { userId, channelId })
+  } catch (error) {
+    logger.error('Failed to open in Slack', error instanceof Error ? error : new Error(String(error)), { userId, channelId })
+    throw error
+  }
+}
+
+/**
+ * Mute conversation via AI function (legacy function)
  */
 async function muteConversation(userId: string, channelId: string): Promise<void> {
   try {

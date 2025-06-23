@@ -89,16 +89,112 @@ export class SlackDataPullEngine {
             activeCount++
           }
 
+          // CRITICAL FIX: Always get accurate read state from conversations.info
+          // conversations.list often returns null for last_read, but conversations.info is reliable
+          let lastRead = conv.last_read
+          let unreadCount = conv.unread_count || 0
+          let unreadCountDisplay = conv.unread_count_display || conv.unread_count || 0
+
+          // Always get accurate read state from conversations.info for all conversations
+          // This ensures we get the most up-to-date membership and read state data
+          logger.info('🚀 STARTING ENHANCED LOGIC for conversation', {
+            antiId: this.antiId,
+            conversationId: conv.id,
+            displayName: conv.display_name || conv.name,
+            currentIsMember: conv.is_member,
+            currentUnreadCount: unreadCount
+          })
+          try {
+            const client = await import('../../webAPI/client.js')
+            const webClient = client.clientPool.getClient(user.accessToken!)
+            const convInfo = await webClient.conversations.info({ channel: conv.id })
+            
+            if (convInfo.ok && convInfo.channel) {
+              const enhancedChannel = convInfo.channel as any
+              const enhancedLastRead = enhancedChannel.last_read
+              const enhancedUnreadCount = enhancedChannel.unread_count || 0
+              const enhancedUnreadCountDisplay = enhancedChannel.unread_count_display || enhancedUnreadCount
+              const enhancedIsMember = enhancedChannel.is_member || false
+              
+              // Use enhanced data if available, otherwise fall back to list data
+              lastRead = enhancedLastRead || lastRead
+              unreadCount = enhancedUnreadCount
+              unreadCountDisplay = enhancedUnreadCountDisplay
+              
+              // Update membership status from enhanced data (this is more accurate)
+              const isMember = enhancedIsMember
+              
+              // For non-members, ensure unread counts are 0 and clear read state
+              if (!isMember) {
+                logger.info('🔧 ENHANCED LOGIC: Setting non-member conversation to 0 unread', {
+                  antiId: this.antiId,
+                  conversationId: conv.id,
+                  displayName: conv.display_name || conv.name,
+                  beforeUnreadCount: unreadCount,
+                  afterUnreadCount: 0,
+                  isMember: false
+                })
+                unreadCount = 0
+                unreadCountDisplay = 0
+                lastRead = undefined // Clear read state for non-members
+              }
+              
+              logger.debug('Enhanced conversation data with conversations.info', {
+                antiId: this.antiId,
+                conversationId: conv.id,
+                name: conv.name,
+                listIsMember: conv.is_member ? 'true' : 'false',
+                enhancedIsMember: isMember ? 'true' : 'false',
+                listLastRead: conv.last_read ? 'provided' : 'null',
+                enhancedLastRead: enhancedLastRead ? 'retrieved' : 'null',
+                finalLastRead: lastRead ? 'has_value' : 'null',
+                finalUnreadCount: unreadCount,
+                membershipChanged: conv.is_member !== isMember
+              })
+              
+              // Update the conversation object with enhanced membership data
+              conv.is_member = isMember
+            }
+            
+            // Rate limit conversations.info calls to prevent API overload
+            if (opts.rateLimitDelay > 0) {
+              await new Promise(resolve => setTimeout(resolve, opts.rateLimitDelay))
+            }
+            
+          } catch (infoError) {
+            logger.warn('Failed to get enhanced conversation info, using list data', {
+              antiId: this.antiId,
+              conversationId: conv.id,
+              error: infoError instanceof Error ? infoError.message : String(infoError)
+            })
+            
+            // If we can't get enhanced data and we're not a member, set unread to 0
+            if (!conv.is_member) {
+              logger.info('🔧 FALLBACK LOGIC: Setting non-member conversation to 0 unread (API call failed)', {
+                antiId: this.antiId,
+                conversationId: conv.id,
+                displayName: conv.display_name || conv.name,
+                beforeUnreadCount: unreadCount,
+                afterUnreadCount: 0,
+                isMember: false,
+                error: infoError instanceof Error ? infoError.message : String(infoError)
+              })
+              unreadCount = 0
+              unreadCountDisplay = 0
+              lastRead = undefined
+            }
+          }
+
           conversations.push({
             id: conv.id,
-            name: conv.name || 'Unknown',
-            displayName: conv.display_name || conv.name || 'Unknown',
+            name: conv.name || '', // Don't use 'Unknown' fallback - let display logic handle it
+            displayName: conv.display_name || conv.name || '',
             type: conv.type,
             lastActivity,
             memberCount: conv.num_members || 0,
-            unreadCount: conv.unread_count || 0,
-            unreadCountDisplay: conv.unread_count_display || conv.unread_count || 0,
-            lastRead: conv.last_read || undefined,
+            unreadCount,
+            unreadCountDisplay,
+            lastRead: lastRead || undefined,
             isPrivate: conv.is_private || false,
             isArchived: conv.is_archived || false,
             isMember: conv.is_member || false

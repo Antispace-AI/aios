@@ -89,6 +89,12 @@ export interface SlackDataStore {
    */
   updateConversationReadState(userId: string, channelId: string, readTs: string): Promise<void>
 
+  /**
+   * Recalculate unread counts for all conversations of a user
+   * Useful for fixing inconsistent unread count data
+   */
+  recalculateAllUnreadCounts(userId: string): Promise<void>
+
   // ===============================
   // Message & Thread Operations
   // ===============================
