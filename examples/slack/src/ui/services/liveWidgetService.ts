@@ -2,6 +2,7 @@ import { getWidgetData, getConversationsForWidget } from '../../routes/widget-da
 import { logger } from '../../util/logger'
 import { getUser } from '../../util/index.js'
 import { handleSlackActions } from '../../ai/handlers/slack.js'
+import { reconcileUserUnreadCounts } from '../../storage/reconciliation'
 
 /**
  * Live Widget Data Interface - Optimized for automatic refresh
@@ -140,6 +141,10 @@ export async function handleQuickAction(action: string, values: any, userId: str
         // Handle logout action - will be processed by main widget
         break
         
+      case 'reconcile_unread':
+        await reconcileUserUnreadCounts(userId)
+        break
+        
       default:
         logger.warn('Unknown quick action', { action, userId })
     }
@@ -216,6 +221,20 @@ async function refreshUserCache(userId: string): Promise<void> {
     logger.info('Cache refresh action', { userId })
   } catch (error) {
     logger.error('Failed to refresh cache', error instanceof Error ? error : new Error(String(error)), { userId })
+    throw error
+  }
+}
+
+/**
+ * Reconcile unread counts for the user
+ */
+async function reconcileUnreadCounts(userId: string): Promise<void> {
+  try {
+    logger.info('Starting unread count reconciliation', { userId })
+    await reconcileUserUnreadCounts(userId)
+    logger.info('Unread count reconciliation completed successfully', { userId })
+  } catch (error) {
+    logger.error('Failed to reconcile unread counts', error instanceof Error ? error : new Error(String(error)), { userId })
     throw error
   }
 } 

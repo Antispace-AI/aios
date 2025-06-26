@@ -254,6 +254,12 @@ export function generateLiveFooter(syncStatus: SyncStatus) {
           Connected to workspace
         </Anti.Text>
       )}
+      <Anti.Button 
+        action="reconcile_unread"
+        text="🔄 Fix Unread Counts"
+        size="small"
+        type="secondary"
+      />
     </Anti.Column>
   )
 } 

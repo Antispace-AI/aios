@@ -440,10 +440,34 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
 
   /**
    * Recalculate unread counts for all conversations of a user
-   * Only recalculates for conversations that have a valid last_read_ts
+   * FIXED: Now handles conversations with NULL last_read_ts properly
    */
   async recalculateAllUnreadCounts(userUuid: string): Promise<void> {
     try {
+      // Step 1: Handle conversations with NULL last_read_ts (treat all messages as unread)
+      await this.db.query(`
+        UPDATE conversations 
+        SET 
+          unread_count = COALESCE(message_counts.count, 0),
+          unread_count_display = COALESCE(message_counts.count, 0),
+          updated_at = NOW()
+        FROM (
+          SELECT 
+            c.id,
+            COUNT(m.id) as count
+          FROM conversations c
+          LEFT JOIN messages m ON c.id = m.conversation_id 
+            AND m.is_deleted = false
+            AND m.message_type != 'tombstone'
+          WHERE c.user_id = $1 AND c.last_read_ts IS NULL
+          GROUP BY c.id
+        ) message_counts
+        WHERE conversations.id = message_counts.id
+          AND conversations.user_id = $1
+          AND conversations.last_read_ts IS NULL
+      `, [userUuid])
+
+      // Step 2: Handle conversations with last_read_ts (count messages newer than read timestamp)
       await this.db.query(`
         UPDATE conversations 
         SET 
@@ -457,16 +481,27 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
           FROM conversations c
           LEFT JOIN messages m ON c.id = m.conversation_id 
             AND m.is_deleted = false
-            AND c.last_read_ts IS NOT NULL
+            AND m.message_type != 'tombstone'
             AND m.message_ts > c.last_read_ts
-          WHERE c.user_id = $1
-            AND c.last_read_ts IS NOT NULL
+          WHERE c.user_id = $1 AND c.last_read_ts IS NOT NULL
           GROUP BY c.id
         ) unread_data
         WHERE conversations.id = unread_data.id
+          AND conversations.user_id = $1
+          AND conversations.last_read_ts IS NOT NULL
       `, [userUuid])
 
-      logger.info('Recalculated unread counts for conversations with read state', { userUuid })
+      // Step 3: Set unread count to 0 for conversations where user is not a member
+      await this.db.query(`
+        UPDATE conversations 
+        SET 
+          unread_count = 0,
+          unread_count_display = 0,
+          updated_at = NOW()
+        WHERE user_id = $1 AND is_member = false
+      `, [userUuid])
+
+      logger.info('Recalculated unread counts for all conversations (including NULL read states)', { userUuid })
     } catch (error) {
       logger.error('Failed to recalculate unread counts', error instanceof Error ? error : new Error(String(error)), { userUuid })
       throw error
@@ -616,14 +651,48 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
         message.replyCount || 0,
         this.parseSlackTimestamp(message.slackTimestamp)
       ])
-
-      // Recalculate unread count for this conversation outside the transaction
-      // to avoid potential deadlocks but still maintain accuracy
     })
 
-    // NOTE: Don't recalculate unread count here since the enhanced sync logic
-    // already provides accurate unread counts from Slack API. Recalculating
-    // based on stored messages would override Slack's actual read state.
+    // FIXED: Update unread count for incoming messages
+    // Only update if this is a new message (not an edit) and is newer than last read timestamp
+    if (message.messageType !== 'edit' && message.slackTimestamp) {
+      try {
+        // Get the conversation's current read state
+        const conversation = await this.getConversation(message.userId, message.slackChannelId)
+        
+        if (conversation) {
+          const messageTime = this.parseSlackTimestamp(message.slackTimestamp)
+          const lastReadTime = conversation.lastReadTs ? this.parseSlackTimestamp(conversation.lastReadTs) : null
+          
+          // If this message is newer than the last read timestamp, increment unread count
+          if (!lastReadTime || messageTime > lastReadTime) {
+            logger.info('Incrementing unread count for new message', {
+              userId: message.userId,
+              channelId: message.slackChannelId,
+              messageTs: message.messageTs,
+              messageTime: messageTime.toISOString(),
+              lastReadTime: lastReadTime?.toISOString() || 'none'
+            })
+            
+            await this.db.query(`
+              UPDATE conversations 
+              SET 
+                unread_count = COALESCE(unread_count, 0) + 1,
+                unread_count_display = COALESCE(unread_count_display, 0) + 1,
+                updated_at = NOW()
+              WHERE user_id = $1 AND slack_channel_id = $2
+            `, [message.userId, message.slackChannelId])
+          }
+        }
+      } catch (error) {
+        logger.error('Failed to update unread count for new message', error instanceof Error ? error : new Error(String(error)), {
+          userId: message.userId,
+          channelId: message.slackChannelId,
+          messageTs: message.messageTs
+        })
+        // Don't throw - message storage succeeded, unread count update is supplementary
+      }
+    }
   }
 
   /**
@@ -960,7 +1029,7 @@ export class PostgreSQLSlackDataStore implements SlackDataStore {
         messageTs,
         reaction.emojiName,
         reaction.count,
-        JSON.stringify(reaction.usersReacted),
+        reaction.usersReacted,
         reaction.userReacted
       ])
 

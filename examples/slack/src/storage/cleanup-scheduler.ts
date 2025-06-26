@@ -1,5 +1,6 @@
 import { createStorageContainer } from './implementations/postgres/container'
 import { logger } from '../util/logger'
+import { reconcileAllUnreadCounts, isReconciliationNeeded } from './reconciliation'
 
 /**
  * Automatic cleanup scheduler for inactive users
@@ -29,6 +30,11 @@ export function startCleanupScheduler(): void {
   setTimeout(async () => {
     await runScheduledCleanup()
   }, 30 * 1000) // 30 seconds delay
+
+  // Run unread count reconciliation on startup (after 10 seconds delay)
+  setTimeout(async () => {
+    await runStartupReconciliation()
+  }, 10 * 1000) // 10 seconds delay
 }
 
 /**
@@ -80,6 +86,52 @@ async function runScheduledCleanup(): Promise<void> {
  */
 export function isCleanupSchedulerRunning(): boolean {
   return cleanupInterval !== null
+}
+
+/**
+ * Run unread count reconciliation on server startup
+ * This fixes any data inconsistencies that occurred while the server was offline
+ */
+async function runStartupReconciliation(): Promise<void> {
+  logger.info('Running startup unread count reconciliation')
+  
+  try {
+    // First check if reconciliation is needed
+    const checkResult = await isReconciliationNeeded()
+    
+    if (!checkResult.needed) {
+      logger.info('No unread count reconciliation needed', { 
+        mismatches: checkResult.mismatches,
+        details: checkResult.details 
+      })
+      return
+    }
+    
+    logger.info('Unread count mismatches detected, starting reconciliation', {
+      mismatches: checkResult.mismatches,
+      details: checkResult.details
+    })
+    
+    // Run reconciliation for all users
+    const reconcileResult = await reconcileAllUnreadCounts()
+    
+    if (reconcileResult.success) {
+      logger.info('Startup unread count reconciliation completed successfully', {
+        usersProcessed: reconcileResult.usersProcessed,
+        errors: reconcileResult.errors.length
+      })
+    } else {
+      logger.warn('Startup unread count reconciliation completed with errors', {
+        usersProcessed: reconcileResult.usersProcessed,
+        errors: reconcileResult.errors
+      })
+    }
+    
+  } catch (error) {
+    logger.error('Startup unread count reconciliation failed', 
+      error instanceof Error ? error : new Error(String(error))
+    )
+  }
 }
 
 /**
