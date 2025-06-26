@@ -293,6 +293,12 @@ export async function executeNaturalLanguageBypass(
     console.log(`🚨 DEVELOPER MODE: Parsed command as:`, parsed)
     
     const result = await executeWithBypassedRateLimit(async () => {
+      // Route to appropriate handler based on function type
+      if (isAuthenticationAction(parsed.functionName)) {
+        const { handleAuthenticationActions } = await import("./auth.js")
+        return await handleAuthenticationActions(parsed.functionName, parsed.params, user, user.id)
+      }
+      // Default to Slack actions for non-auth functions
       return await handleSlackActions(parsed.functionName, parsed.params, user)
     }, `BYPASS_NL_${parsed.functionName}`)
     
@@ -318,4 +324,11 @@ export async function executeNaturalLanguageBypass(
       command
     }
   }
+}
+
+/**
+ * Helper function to check if a function is an authentication action
+ */
+function isAuthenticationAction(name: string): boolean {
+  return ['getAuthUrl', 'checkAuthStatus', 'manualAuth'].includes(name)
 } 

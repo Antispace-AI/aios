@@ -381,6 +381,11 @@ export async function parseNaturalLanguageCommand(command: string): Promise<{ fu
           limit: "Maximum number of recent unread messages to return (default: 10, max: 50)"
         },
         required: []
+      },
+      checkAuthStatus: {
+        description: "Check the current Slack authentication status. Use this when user wants to 'check auth', 'check authentication', 'check slack auth', 'verify auth', or 'am I authenticated'.",
+        parameters: {},
+        required: []
       }
     };
 
@@ -402,6 +407,8 @@ Examples of expected outputs:
 - "get unread message count" → {"functionName": "getTotalUnreadSummary", "params": {}}
 - "show recent unread messages" → {"functionName": "getRecentUnreadMessages", "params": {"limit": 10}}
 - "mark #general as read" → {"functionName": "markConversationAsRead", "params": {"conversationIdentifier": "#general"}}
+- "check slack auth" → {"functionName": "checkAuthStatus", "params": {}}
+- "am I authenticated" → {"functionName": "checkAuthStatus", "params": {}}
 
 Rules:
 1. Always respond with valid JSON in format: {"functionName": "string", "params": {}}
