@@ -13,8 +13,8 @@ export const SLACK_CLIENT_SECRET = process.env.SLACK_CLIENT_SECRET || (() => {
 })()
 
 // Optional with sensible defaults
-export const BASE_URL = process.env.BASE_URL || 'http://localhost:6100'
-export const ANTISPACE_URL = process.env.ANTISPACE_URL || 'http://localhost:3000'
+export const BASE_URL = process.env.BASE_URL || 'http://localhost:6101'
+export const ANTISPACE_URL = process.env.ANTISPACE_URL || 'https://localhost:3000'
 export const IS_PRODUCTION = process.env.NODE_ENV === 'production'
 
 // Log level - simple approach

@@ -1,53 +1,67 @@
 /**
- * Enhanced parameter parsing logic extracted from main handler
- * Handles various parameter formats that can come from the AI request
+ * Parameter parsing utility for AI function calls
+ * Handles the complex parameter formats that come from the AI system
  */
 
 export function parseParameters(parameters: any): any {
-  console.log("📝 Raw parameters:", parameters)
-  
-  let parsedParams = parameters
-  const params = parameters as any
-  
-  console.log("🔍 Parameter parsing debug:")
-  console.log("  - typeof parameters:", typeof parameters)
-  console.log("  - Is array?", Array.isArray(parameters))
-  console.log("  - Is string?", typeof parameters === 'string')
-  console.log("  - Has length property?", params && typeof params.length === 'number')
-  console.log("  - Length:", params?.length)
-  console.log("  - First few chars:", typeof params === 'string' ? params.substring(0, 10) : "N/A")
-  
+  // Return early for null/undefined
+  if (!parameters) {
+    return {}
+  }
+
   try {
-    // Case 1: Parameters is a JSON string that represents an array
-    if (typeof params === 'string' && params.startsWith('[')) {
-      console.log("🔧 Parsing JSON string that looks like an array...")
-      const arrayFromString = JSON.parse(params)
-      console.log("✅ Parsed array from string:", arrayFromString)
-      
-      if (Array.isArray(arrayFromString) && arrayFromString.length > 0 && typeof arrayFromString[0] === 'string') {
-        console.log("🔧 Parsing JSON string from array element...")
-        parsedParams = JSON.parse(arrayFromString[0])
-        console.log("✅ Final parsed parameters:", parsedParams)
-      } else {
-        console.log("⚠️ Array doesn't contain JSON string, using array as-is")
-        parsedParams = arrayFromString
+    // If already an object, return as-is
+    if (typeof parameters === 'object' && !Array.isArray(parameters)) {
+      return parameters
+    }
+
+    // Handle array format - check if first element is a JSON string
+    if (Array.isArray(parameters) && parameters.length > 0) {
+      const firstParam = parameters[0]
+      if (typeof firstParam === 'string') {
+        try {
+          return JSON.parse(firstParam)
+        } catch {
+          // If parsing fails, return the array as-is
+          return parameters
+        }
+      }
+      return parameters
+    }
+
+    // Handle string format - try to parse as JSON
+    if (typeof parameters === 'string') {
+      try {
+        const parsed = JSON.parse(parameters)
+        // If parsed result is an array with a string, parse that string too
+        if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === 'string') {
+          try {
+            return JSON.parse(parsed[0])
+          } catch {
+            return parsed
+          }
+        }
+        return parsed
+      } catch {
+        // If parsing fails, return original string
+        return { raw: parameters }
       }
     }
-    // Case 2: Parameters is already an array-like object  
-    else if (params && typeof params.length === 'number' && params.length > 0 && typeof params[0] === 'string') {
-      console.log("🔧 Parsing JSON string from array-like object...")
-      parsedParams = JSON.parse(params[0])
-      console.log("✅ Parsed parameters from array element:", parsedParams)
+
+    // Handle array-like objects (has length property)
+    if (parameters && typeof parameters.length === 'number' && parameters['0']) {
+      try {
+        return JSON.parse(parameters['0'])
+      } catch {
+        return parameters
+      }
     }
-    // Case 3: Parameters is already a proper object
-    else {
-      console.log("⚠️ Parameters don't match expected formats, using as-is")
-    }
-  } catch (e) {
-    console.warn("❌ Failed to parse parameters:", e)
-    console.log("🔄 Falling back to original parameters")
-    parsedParams = parameters
+
+    // Fallback: return as-is
+    return parameters
+
+  } catch (error) {
+    console.warn('Parameter parsing failed, using original:', error)
+    return parameters
   }
-  
-  return parsedParams
 } 

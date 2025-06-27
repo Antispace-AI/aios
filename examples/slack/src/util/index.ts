@@ -1,25 +1,93 @@
-import db, { type UserData } from "./db"
+// Import PostgreSQL storage directly instead of using adapter
+import { createStorageContainer } from '../storage'
+import { SlackDataStore } from '../storage/interfaces/slack-data-store'
+import type { User } from '../storage/schema/types/database'
 
-export type User = UserData
+// Re-export User type for backward compatibility
+export type { User }
+
+// Lazy-load storage instance to avoid circular dependencies
+let dataStore: SlackDataStore | null = null
+
+function getDataStore(): SlackDataStore {
+  if (!dataStore) {
+    const { dataStore: ds } = createStorageContainer()
+    dataStore = ds
+  }
+  return dataStore
+}
 
 /**
  * Get or create a user by their Antispace user ID
+ * Also touches user activity for session management
  */
-export const getUser = async (userID: string): Promise<User> => {
+export const getUser = async (userID: string): Promise<any> => {
+  const store = getDataStore()
+  
   // First, try to get existing user
-  const existingUser = await db.getUser(userID)
+  const existingUser = await store.getUser(userID)
 
   if (existingUser) {
+    // Touch user activity for session management (Week 4)
+    try {
+      await store.touchUserActivity(userID)
+    } catch (error) {
+      console.warn(`Failed to touch activity for user ${userID}:`, error)
+    }
     return existingUser
   }
 
   // User doesn't exist, create a new one
   console.log(`Creating new user record for ${userID}`)
-  return await db.createUser(userID)
+  return await store.createUser({ antiId: userID })
+}
+
+/**
+ * Check if a user is authenticated with Slack
+ */
+export const isUserAuthenticated = async (userID: string): Promise<boolean> => {
+  try {
+    const store = getDataStore()
+    const user = await store.getUser(userID)
+    return !!(user && user.accessToken && user.accessToken.trim().length > 0)
+  } catch (error) {
+    console.error(`Error checking authentication for user ${userID}:`, error)
+    return false
+  }
+}
+
+/**
+ * Clear user's Slack authentication tokens (logout)
+ */
+export const clearUserTokens = async (userID: string): Promise<boolean> => {
+  try {
+    const store = getDataStore()
+    const user = await store.getUser(userID)
+    if (!user) {
+      return false // User doesn't exist
+    }
+
+    // Clear auth-related fields
+    await store.updateUser(userID, {
+      accessToken: undefined,
+      refreshToken: undefined,
+      teamId: undefined,
+      teamName: undefined,
+      slackUserId: undefined,
+      slackUserName: undefined,
+    })
+
+    console.log(`Successfully cleared tokens for user ${userID}`)
+    return true
+  } catch (error) {
+    console.error(`Error clearing tokens for user ${userID}:`, error)
+    return false
+  }
 }
 
 /**
  * Update user's Slack authentication tokens
+ * Now handles new users gracefully without error messages
  */
 export const updateUserTokens = async (
   userID: string, 
@@ -27,32 +95,33 @@ export const updateUserTokens = async (
   refreshToken?: string,
   teamId?: string,
   teamName?: string,
-  userId?: string,
-  userName?: string
-): Promise<User> => {
+  slackUserId?: string,
+  slackUserName?: string
+): Promise<any> => {
   try {
-    return await db.updateUser(userID, {
+    const store = getDataStore()
+    
+    // Check if user exists first to avoid error logging
+    const existingUser = await store.getUser(userID)
+    
+    if (!existingUser) {
+      // User doesn't exist, create them first
+      console.log(`User ${userID} not found, creating new user`)
+      await store.createUser({ antiId: userID })
+    }
+    
+    // Now update the user (whether existing or newly created)
+    return await store.updateUser(userID, {
       accessToken,
       refreshToken,
       teamId,
       teamName,
-      userId,
-      userName,
+      slackUserId,
+      slackUserName,
     })
+    
   } catch (error) {
-    // If user doesn't exist, create them first
-    if (error instanceof Error && error.message.includes("not found")) {
-      console.log(`User ${userID} not found, creating new user`)
-      await db.createUser(userID)
-      return await db.updateUser(userID, {
-        accessToken,
-        refreshToken,
-        teamId,
-        teamName,
-        userId,
-        userName,
-      })
-    }
+    console.error(`Failed to update user tokens for ${userID}:`, error)
     throw error
   }
 } 

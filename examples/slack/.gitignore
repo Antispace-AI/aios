@@ -29,3 +29,4 @@ examples/
 docs/
 
 slack_poc_implementation_plan.md
+.cursor/

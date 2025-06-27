@@ -7,7 +7,7 @@ import * as functions from "./functions"
 const manifest: AntispaceAppManifest<typeof functions> = {
   name: "Slack",
   slug: "slack",
-  wantsPage: false,
+  wantsPage: true,
   wantsRefresh: true,
   hotkey: "s",
   functions,

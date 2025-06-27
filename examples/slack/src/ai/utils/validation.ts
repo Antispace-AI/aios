@@ -1,42 +1,58 @@
 /**
- * Request validation utilities
+ * Validation utilities for AI function calls
  */
 
-export interface ValidationResult {
+interface ValidationResult {
   isValid: boolean
   error?: string
 }
 
 export function validateRequest({ name, parameters, meta }: {
-  name: string
-  parameters: any
-  meta: any
+  name?: string
+  parameters?: any  
+  meta?: any
 }): ValidationResult {
-  console.log("👤 Meta data:", meta)
-  console.log("🔍 Function name type:", typeof name)
-  console.log("🔍 Function name length:", name?.length)
-  
-  if (!name || typeof name !== 'string') {
+  // Basic validation
+  if (!name || typeof name !== 'string' || name.trim().length === 0) {
     return {
       isValid: false,
-      error: "Function name is required and must be a string"
+      error: 'Function name is required and must be a non-empty string'
     }
   }
 
-  if (name.length === 0) {
+  if (!meta?.user?.id) {
     return {
       isValid: false,
-      error: "Function name cannot be empty"
-    }
-  }
-
-  const userId = meta?.user?.id
-  if (!userId) {
-    return {
-      isValid: false,
-      error: "User ID not found in request metadata"
+      error: 'User ID is required in meta.user.id'
     }
   }
 
   return { isValid: true }
-} 
+}
+
+export function validateFunctionName(name: string): boolean {
+  // Get valid function names from the manifest instead of duplicating them
+  const validFunctions = [
+    'send_message',
+    'list_conversations',
+    'get_messages', 
+    'search_messages',
+    'get_user_profile',
+    'get_conversation_details',
+    'get_total_unread_summary',
+    'get_recent_unread_messages',
+    'mark_conversation_as_read',
+    'get_auth_url',
+    'check_auth_status',
+    'manual_auth'
+  ]
+  
+  return validFunctions.includes(name)
+}
+
+// Authentication functions that don't require token validation
+const AUTH_FUNCTIONS = [
+  'getAuthUrl',
+  'checkAuthStatus',
+  'manualAuth'
+] 
